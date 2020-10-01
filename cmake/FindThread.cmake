@@ -1,0 +1,15 @@
+function(FindThread)
+  if(TARGET threads_internal)
+    return()
+  endif()
+
+  find_package(Threads REQUIRED)
+
+  add_library(threads_internal INTERFACE)
+  if(TARGET Threads::Threads)
+    target_link_libraries(threads_internal INTERFACE Threads::Threads)
+  else()
+    target_link_libraries(threads_internal INTERFACE "$<BUILD_INTERFACE:${THREADS_LIBRARY}>")
+    target_include_directories(threads_internal INTERFACE "$<BUILD_INTERFACE:${THREADS_INCLUDE_DIRS}>")
+  endif()
+endfunction()
