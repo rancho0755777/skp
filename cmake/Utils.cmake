@@ -32,7 +32,7 @@ function (get_cpu_cores OUTPUT_VAR_NAME)
     set(WORK_FOLDER "${PROJECT_BINARY_DIR}/GetCpuCores")
     file(MAKE_DIRECTORY ${WORK_FOLDER})
 
-    set(SRC ${PROJECT_SOURCE_DIR}/../cmake/GetCpuCores.c)
+    set(SRC ${PROJECT_SOURCE_DIR}/cmake/GetCpuCores.c)
     set(COMPILE_OUTPUT_FILE "${WORK_FOLDER}/GetCpuCores.log")
 
     try_run(RUN_RESULT COMPILE_RESULT
