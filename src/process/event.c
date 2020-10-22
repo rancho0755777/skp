@@ -1492,7 +1492,7 @@ void rcu_barrier(void)
 int uev_core_setcpu(struct uev_core *core, int cpu)
 {
 	unsigned long nflags, flags, idx;
-	uint32_t hint = single_mode?0:cpu; /*必须初始化*/
+	int hint = single_mode?0:cpu; /*必须初始化*/
 
 	BUG_ON(!sysevent_up);
 
@@ -1501,7 +1501,7 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 	if (single_mode && !idx)
 		return 0;
 
-	if (idx >= 0 && idx < NR_CPUS)
+	if (idx != EVENT_IDX_MAX && idx < NR_CPUS)
 		return idx;
 
 	/*可能期望由系统分配索引*/
@@ -1538,8 +1538,8 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 	idx = uev_core_mkidx(cpu);
 	flags = READ_ONCE(core->flags);
 	do {
-		hint = uev_flags_idx(flags);
-		if (skp_unlikely(hint != EVENT_IDX_MAX))
+		uint32_t oidx = uev_flags_idx(flags);
+		if (skp_unlikely(oidx != EVENT_IDX_MAX))
 			break;
 		nflags = uev_mask_other(flags) | idx;
 	} while (!try_cmpxchg(&core->flags, &flags, nflags));
