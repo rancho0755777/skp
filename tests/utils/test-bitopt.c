@@ -42,6 +42,15 @@ int main(int argc, char **argv)
 		BUG_ON(v64 != 0xbfffffffffffffff);
 	}
 
+    {
+		uint16_t v16 = 0x1234;
+		BUG_ON(SWAP_2BYTES(v16) != 0x3412);
+		uint32_t v32 = 0x12345678;
+		BUG_ON(SWAP_4BYTES(v32) != 0x78563412);
+		uint64_t v64 = 0x1234567890abcdef;
+		BUG_ON(SWAP_8BYTES(v64) != 0xefcdab9078563412);
+    }
+    
 	{
 		bool rc = 0;
 		unsigned long bitmap[2] = { 0, 0, };
