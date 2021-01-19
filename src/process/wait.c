@@ -4,7 +4,7 @@
 static inline int __default_wake_function(wait_queue_t *wait, void *key)
 {
 	xadd(&wait->cond, 1);
-	return futex_wake(&wait->cond, 1) ? 1 : 0;
+	return futex_wake(&wait->value, 1) ? 1 : 0;
 }
 
 static inline int __autoremove_wake_function(wait_queue_t *wait, void *key)
@@ -117,25 +117,34 @@ void __wake_up_locked(wait_queue_head_t *q, int nr, void *key)
 
 int wait_on_timeout(wait_queue_t *wait, int timedout)
 {
-	int rc = 1, cond = READ_ONCE(wait->cond);
-	if (cond == READ_ONCE(wait->last_cond))
-		rc = futex_wait(&wait->cond, cond, timedout);
-	wait->last_cond = READ_ONCE(wait->cond);
+	int rc = 1;
+	union {
+		int32_t value;
+		struct {
+			int16_t cond;
+			int16_t last_cond;
+		};
+	} v;
+
+	v.value = READ_ONCE(wait->value);
+	if (v.cond == v.last_cond)
+		rc = futex_wait(&wait->value, v.value, timedout);
+	WRITE_ONCE(wait->last_cond, wait->cond);
 	return rc;
 }
 
 static inline wait_queue_head_t *__bit_waitqueue(void *word, int bit);
 
 int __wait_on_bit_common(wait_queue_head_t *wq, wait_bit_queue_t *q,
-		wait_queue_fn action, bool lock)
+		wait_queue_fn action, bool lock_bit)
 {
 	int ret = 0;
 
-	q->wait.flags = lock ? WQ_FLAG_EXCLUSIVE : 0;
+	q->wait.flags = lock_bit ? WQ_FLAG_EXCLUSIVE : 0;
 	do {
 		wait_queue_head_lock(wq);
 		if (list_empty(&q->wait.task_list)) {
-			if (lock) {
+			if (lock_bit) {
 				__add_wait_queue_tail(wq, &q->wait);
 			} else {
 				__add_wait_queue(wq, &q->wait);
@@ -148,7 +157,7 @@ int __wait_on_bit_common(wait_queue_head_t *wq, wait_bit_queue_t *q,
 				break;
 		}
 
-		if (lock) {
+		if (lock_bit) {
 			ret = test_and_set_bit(q->key.bit_nr, q->key.flags);
 		} else {
 			ret = test_bit(q->key.bit_nr, q->key.flags);
@@ -199,9 +208,8 @@ static inline wait_queue_head_t *__bit_waitqueue(void *word, int bit)
 		/*optimistic locking*/
 		big_lock();
 		if (skp_likely(!bit_wait_up)) {
-			for (int i = 0; i < WAIT_TABLE_SIZE; i++) {
+			for (int i = 0; i < WAIT_TABLE_SIZE; i++)
 				init_waitqueue_head(&bit_wait_table[i]);
-			}
 			WRITE_ONCE(bit_wait_up, true);
 		}
 		big_unlock();
