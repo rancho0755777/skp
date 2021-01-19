@@ -79,8 +79,8 @@ extern uint64_t xadd64(volatile uint64_t *ptr, uint64_t _new);
 	__typeof__(*(p2)) __old2 = (o2), __new2 = (n2);							\
 	BUILD_BUG_ON(sizeof(*(p1)) != sizeof(long));							\
 	BUILD_BUG_ON(sizeof(*(p2)) != sizeof(long));							\
-	BUILD_BUG_ON((unsigned long)(p1) % (2 * sizeof(long)));					\
-	BUILD_BUG_ON((unsigned long)((p1) + 1) != (unsigned long)(p2));			\
+	BUG_ON((unsigned long)(p1) % (2 * sizeof(long)));						\
+	BUG_ON((unsigned long)((p1) + 1) != (unsigned long)(p2));				\
 	asm volatile(LOCK_PREFIX "cmpxchg%c4b %2; sete %0"						\
 		     : "=a" (__ret), "+d" (__old2),									\
 		       "+m" (*(p1)), "+m" (*(p2))									\
@@ -207,9 +207,9 @@ static inline void atomic_xor(int i, atomic_t *v)
 	typeof(_po) __po = (_po);												\
 	typeof(*(_po)) __r, __o = *__po;										\
 	__r = cmpxchg_val((_p), __o, (_n));										\
-	if (skp_unlikely(__r != __o))												\
+	if (skp_unlikely(__r != __o))											\
 		*__po = __r;														\
-	skp_likely(__r == __o);														\
+	skp_likely(__r == __o);													\
 })
 
 #define __xadd_unless(ptr, v, u) 											\
@@ -218,7 +218,7 @@ static inline void atomic_xor(int i, atomic_t *v)
 	typeof(*(ptr)) __o = READ_ONCE(*__ptr),									\
 		__v = (v), __u = (u); 												\
 	do { 																	\
-		if (skp_unlikely(__o == __u)) break;									\
+		if (skp_unlikely(__o == __u)) break;								\
 	} while (!try_cmpxchg(__ptr, &__o, __o + __v)); 						\
 	__o; 																	\
 })
@@ -559,10 +559,10 @@ do {										\
 		VAL = READ_ONCE(*__PTR);			\
 		if (cond_expr)						\
 			break;							\
-		if (skp_unlikely(!(__seq & 3))) {	\
-			sched_yield();					\
-		} else { 							\
+		if (skp_likely(__seq & 3)) {		\
 			cpu_relax();					\
+		} else { 							\
+			sched_yield();					\
 		}									\
 	}										\
 	static_mb();							\
