@@ -1501,10 +1501,23 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 {
 	uint32_t hint = cpu; /*必须初始化*/
 	unsigned long nflags, flags, idx;
+<<<<<<< HEAD
 
 	/*已经设置则忽略*/
 	idx = uev_core_idx(core);
 	if (idx >= 0 && idx < NR_CPUS)
+=======
+	int hint = single_mode?0:cpu; /*必须初始化*/
+
+	BUG_ON(!sysevent_up);
+
+	/*已经设置则忽略*/
+	idx = uev_core_idx(core);
+	if (single_mode && !idx)
+		return 0;
+
+	if (idx != EVENT_IDX_MAX && idx < NR_CPUS)
+>>>>>>> 3191d73595816997b7658569ee81d3386f75aea9
 		return idx;
 
 	if (single_mode) {
@@ -1542,8 +1555,8 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 	idx = uev_core_mkidx(cpu);
 	flags = READ_ONCE(core->flags);
 	do {
-		hint = uev_flags_idx(flags);
-		if (skp_unlikely(hint != EVENT_IDX_MAX))
+		uint32_t oidx = uev_flags_idx(flags);
+		if (skp_unlikely(oidx != EVENT_IDX_MAX))
 			break;
 		nflags = uev_mask_other(flags) | idx;
 	} while (!try_cmpxchg(&core->flags, &flags, nflags));

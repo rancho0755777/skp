@@ -99,60 +99,43 @@ static __always_inline void __write_once_size(volatile void *p, void *res,
 	__u.__val;																\
 })
 
-/////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // 位的旋转
-/////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 /**
  * 将左边的 shift 位 旋转到右边
+ *           (2)
+ * 1011 1110 --> 1111 1010
+ * 或
+ * 将右边的 shift 位 旋转到左边
+ *           (2)
+ * 1110 1110 --> 1011 1011
  */
-static inline uint64_t rol64(uint64_t word, unsigned int shift)
-{
-	return (word << shift) | (word >> (64 - shift));
-}
+#define __defunc_rolr__(bits)												\
+static inline uint##bits##_t rol##bits(uint##bits##_t word, unsigned shift)	\
+{ return (word << shift) | (word >> (bits - shift)); }						\
+static inline uint##bits##_t ror##bits(uint##bits##_t word, unsigned shift)	\
+{ return (word >> shift) | (word << (bits - shift)); }
 
-static inline uint64_t ror64(uint64_t word, unsigned int shift)
-{
-	return (word >> shift) | (word << (64 - shift));
-}
+__defunc_rolr__(8)
+__defunc_rolr__(16)
+__defunc_rolr__(32)
+__defunc_rolr__(64)
 
-static inline uint32_t rol32(uint32_t word, unsigned int shift)
-{
-	return (word << shift) | (word >> (32 - shift));
-}
-
-static inline uint32_t ror32(uint32_t word, unsigned int shift)
-{
-	return (word >> shift) | (word << (32 - shift));
-}
-
-static inline uint16_t rol16(uint16_t word, unsigned int shift)
-{
-	return (word << shift) | (word >> (16 - shift));
-}
-
-static inline uint16_t ror16(uint16_t word, unsigned int shift)
-{
-	return (word >> shift) | (word << (16 - shift));
-}
-
-static inline uint8_t rol8(uint8_t word, unsigned int shift)
-{
-	return (word << shift) | (word >> (8 - shift));
-}
-
-static inline uint8_t ror8(uint8_t word, unsigned int shift)
-{
-	return (word >> shift) | (word << (8 - shift));
-}
-
-/* 交换双字节 */
+/*
+ * 交换双字节 
+ * 0x1234 => 0x3412
+ */
 #if !defined(SWAP_2BYTES)
   #define SWAP_2BYTES(x)													\
 	({ short __v = (short)(x);												\
-		(((__x & 0xff00U) >> 8) | ((__v & 0x00ffU) << 8)); })
+		(((__v & 0xff00U) >> 8) | ((__v & 0x00ffU) << 8)); })
 #endif
 
-/* 交换四字节 */
+/*
+ * 交换四字节
+ * 0x12345678 => 0x78563412
+ */
 #if !defined(SWAP_4BYTES)
   #define SWAP_4BYTES(x)													\
 	({ int __v = (int)(x); 													\
@@ -160,7 +143,10 @@ static inline uint8_t ror8(uint8_t word, unsigned int shift)
 		((__v & 0x0000ff00U) << 8) | ((__v & 0x000000ffU) << 24)); })
 #endif
 
-/* 交换八字节 */
+/*
+ * 交换八字节
+ * 0x1234567890abcdef => 0xefcdab9078563412
+ */
 #if !defined(SWAP_8BYTES)
   #define SWAP_8BYTES(x)													\
 	({ long long __v = (long long)(x);										\
@@ -174,6 +160,7 @@ static inline uint8_t ror8(uint8_t word, unsigned int shift)
 		((__v & 0x00000000000000ff) << 56)); })
 #endif
 
+/*64位 主机与网络字节序 转换*/
 #include <arpa/inet.h>
 
 #ifndef htonll
@@ -257,8 +244,7 @@ do {																		\
 		v, cc, __CLOBBERS_MEM(clobbers), vcon (val))
 
 #if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 1)
-/* Technically wrong, but this avoids compilation errors on some gcc
-   versions. */
+/*Technically wrong, but this avoids compilation errors on some gcc versions.*/
 # define BITOP_ADDR(x) "=m" (*(volatile long *) (x))
 #else
 # define BITOP_ADDR(x) "+m" (*(volatile long *) (x))
@@ -408,7 +394,8 @@ static inline bool test_and_set_bit_lock(long nr, volatile unsigned long *addr)
 ////////////////////////////////////////////////////////////////////////////////
 /**
  * 找到最后一位被设置的位下标，下标从 1 开始
- * 如果值 x 为 0 ，则返回 0 
+ * 如果值 x 为 0 ，则返回 0
+ * __builtin_clz() 表示 count - leading - zero 即从高位起，连续设置为0的位的数量
  */
 #include <string.h>
 #include <strings.h>
@@ -453,20 +440,22 @@ static inline int __flsll(long long x)
 /**
  * 找到第一位被设置的位下标，下标从 0 开始
  * 如果值 x 为 0 ，则结果未定义
+ * __builtin_clz() 表示 count - trailing - zero 即从低位起，连续设置为0的位的数量
  */
 static inline int __ffs(int x)
 {
-	return __builtin_ctz(x); /*x前面0的个数*/
+	return __builtin_ctz(x);
 }
 static inline int __ffsl(long x)
 {
-	return __builtin_ctzl(x); /*x前面0的个数*/
+	return __builtin_ctzl(x);
 }
 static inline int __ffsll(long long x)
 {
-	return __builtin_ctzll(x); /*x前面0的个数*/
+	return __builtin_ctzll(x);
 }
 
+/*已置位数*/
 static inline int hweight32(uint32_t w)
 {
 	return __builtin_popcount(w);
@@ -489,6 +478,7 @@ static inline unsigned int hweight_long(unsigned long w)
 #define ffs64(x) ffsll((long long)(x))
 #define __fls64(x) __flsll((long long)(x))
 #define __ffs64(x) __ffsll((long long)(x))
+
 #define ffz(x)  __ffs(~(x))
 #define ffzl(x)  __ffsl(~(x))
 #define ffzll(x)  __ffsll(~(x))
@@ -496,33 +486,36 @@ static inline unsigned int hweight_long(unsigned long w)
 ////////////////////////////////////////////////////////////////////////////////
 // 2 ^ n 指数计算
 ////////////////////////////////////////////////////////////////////////////////
-/*获取 count 向 2 ^ x 对齐的指数*/
-static inline int get_count_order(unsigned int count)
+/*获取 v 向上对齐到 2^n 的 指数*/
+static inline int get_count_order(unsigned int v)
 {
-	int order = fls(count) - 1;
-	if (count & (count - 1))
-		order++;
-	return order;
-}
-
-static inline int get_count_order_long(unsigned long l)
-{
-	if (l == 0UL)
+	if (v == 0U)
 		return -1;
-	else if (l & (l - 1UL))
-		return flsl(l);
+	else if (v & (v - 1U))
+		return fls(v); /*非2^n，则向上对齐*/
 	else
-		return flsl(l) - 1;
+		return fls(v) - 1;
 }
 
-static inline int __ilog2_u32(uint32_t n)
+static inline int get_count_order_long(unsigned long v)
 {
-	return fls(n) - 1;
+	if (v == 0UL)
+		return -1;
+	else if (v & (v - 1UL))
+		return flsl(v); /*非2^n，则向上对齐*/
+	else
+		return flsl(v) - 1;
 }
 
-static inline int __ilog2_u64(uint64_t n)
+/*获取 v 向下 2^n 对齐的 指数*/
+static inline int __ilog2_u32(uint32_t v)
 {
-	return (int)(fls64(n) - 1);
+	return fls(v) - 1;
+}
+
+static inline int __ilog2_u64(uint64_t v)
+{
+	return (int)(fls64(v) - 1);
 }
 
 /**
