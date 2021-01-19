@@ -7,17 +7,17 @@ __BEGIN_DECLS
 
 /*整数 ID 分配器 参考 系统 pid 分配*/
 struct idmap {
-	uint32_t nr_bit;
 	atomic_t nr_free;
+	uint32_t nr_bit;
 	void *page;
 };
 
 struct idt {
 	/*todo : 使用一个 last 分配ID的缓存池*/
+	atomic_t nr_free;
 	uint32_t offset;
 	uint32_t nr_bit;
 	uint32_t last;
-	atomic_t nr_free;
 	struct idmap *idmap;
 };
 
@@ -31,7 +31,11 @@ static inline uint32_t idt_nr_ids(const struct idt *idt)
 	return idt->nr_bit - atomic_read(&idt->nr_free);
 }
 
-/*可以指定id的起始ID号和结束ID号*/
+/*
+ * 可以指定id的起始ID号和结束ID号
+ * @param start 闭区间
+ * @param end 闭区间
+ */
 extern int idt_init(struct idt *idt, uint32_t start, uint32_t end);
 extern void idt_destroy(struct idt *idt);
 
@@ -68,16 +72,20 @@ extern int idr_alloc(struct idr*, void *ptr);
 extern void *idr_remove(struct idr*, int _id);
 extern void *idr_find(struct idr*, int _id);
 
+/**
+ * @param start 闭区间
+ * @param end 闭区间
+ */
 extern int idr_init_base(struct idr*, uint32_t start, uint32_t end);
 
 static inline int idr16_init(struct idr *idr)
 {
-	return idr_init_base(idr, 0, S16_MAX);
+	return idr_init_base(idr, 0, S16_MAX - 1);
 }
 
 static inline int idr32_init(struct idr *idr)
 {
-	return idr_init_base(idr, 0, S32_MAX);
+	return idr_init_base(idr, 0, S32_MAX - 1);
 }
 
 extern void idr_destroy(struct idr*);
