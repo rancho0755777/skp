@@ -108,12 +108,15 @@ static void init_node_config(struct node_config node_cfg[])
 		node_cfg[nid].start_pfn = nid * VPAGES_PER_NODE;
 		node_cfg[nid].end_pfn = (nid + 1) * VPAGES_PER_NODE - 1;
 
+#ifdef ZONE_DEBUG
 		log_debug("node: %u, start_pfn: %lu, end_pfn: %lu",
 			nid, node_cfg[nid].start_pfn, node_cfg[nid].end_pfn);
 
 		log_debug("\treserving %zu Kbytes for lmem_map of node %u",
 				(VPAGES_PER_NODE * sizeof(struct vpage))>> 10, nid);
 		log_debug("\tsetting physnode_map array to node %u for pfns: ", nid);
+#endif
+
 		/*
 		 * 初始化pfn到node的映射
 		 * 1. 当node的当前配置数量与默认的最大数量一致时，形成一一映射。
@@ -128,7 +131,9 @@ static void init_node_config(struct node_config node_cfg[])
 		for (unsigned long pfn = node_cfg[nid].start_pfn;
 				pfn < node_cfg[nid].end_pfn; pfn += VPAGES_PER_ELEMENT) {
 			physnode_map[pfn >> VPAGES_PER_ELEMENT_SHIFT] = nid;
+#ifdef ZONE_DEBUG
 			log_debug("\t\tnode map : %lu ", pfn);
+#endif
 		}
 	}
 }
@@ -261,8 +266,10 @@ static void __node_supply_memory(void *addr, size_t size)
 
 	nid = pfn_to_nid(virt_to_pfn(addr));
 	has_up = test_bit(nid, node_map.has_up);
-	if (!has_up)
+	if (!has_up) {
 		startup_node(nid, &addr);
+		size = end - (uintptr_t)addr;
+	}
 
 	init_node_memmap(nid, addr, size);
 

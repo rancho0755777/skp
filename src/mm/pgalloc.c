@@ -6,7 +6,6 @@
 //
 
 #include <skp/mm/pgalloc.h>
-#include <skp/process/wait.h>
 #include <skp/process/thread.h>
 
 #include <skp/mm/slab.h>
@@ -179,7 +178,7 @@ void __free_pages_bulk(struct vpage *page, struct zone *zone, int order)
 	BUDDY_BUG_ON(!base);
 	BUDDY_BUG_ON(PageReserved(page));
 	BUDDY_BUG_ON(bad_range(zone, page));
-	BUDDY_BUG_ON(page_idx & (order_size - 1));
+	BUDDY_BUG_ON(page_idx & ((1U<<order)-1));
 
 	if (skp_unlikely(!zone->free_pages))
 		set_bit(page_to_nid(page), node_map.has_free);
@@ -550,11 +549,6 @@ static int sync_page(wait_queue_t *wait)
 {
 	wait_on(wait);
 	return 0;
-}
-
-static inline void wake_up_page(struct vpage *page, int bit_nr)
-{
-	wake_up_bit(&page->flags, bit_nr);
 }
 
 void wait_on_page_bit(struct vpage *page, int bit_nr)
