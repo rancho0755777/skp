@@ -804,7 +804,7 @@ void xprt_tcpserv_recv(struct xprt *lstn, unsigned long stats)
 
 void xprt_tcpserv_send(struct xprt *xprt, unsigned long stats)
 {
-	WARN(1, "impossible! it nerver invoke this function");
+	log_warn("impossible! it nerver invoke this function");
 }
 
 void xprt_tcpserv_changed(struct xprt *xprt, unsigned long stats)
@@ -1258,7 +1258,8 @@ mkdir -p /tmp/ssl/certs && \
 cd /tmp/ssl/certs && \
 openssl req -newkey rsa:2048 -nodes -keyout serverKey.pem \
 -x509 -days 365 -out serverCert.cer \
--subj \"/C=CN/ST=SH/L=SH/O=skp.default.cert/OU=skp.default.key\"";
+-subj \"/C=CN/ST=SH/L=SH/O=skp.default.cert/OU=skp.default.key\" && \
+cd -";
 
 static void __ssl_init_env(void)
 {
@@ -1418,11 +1419,9 @@ const char *ssl_stack_error(void)
 
 void ssl_stack_error_clear(void)
 {
-#ifdef XPRT_DEBUG
 	while (ERR_peek_error())
 		log_warn("SSL error stack : %s", ssl_stack_error());
 	ERR_clear_error();
-#endif
 }
 
 const char *xprt_ssl_error(const struct xprt_ssl *xprt, int ret)
@@ -1556,7 +1555,9 @@ int xprt_ssl_handshake(struct xprt *xprt, unsigned long event)
 
 	/*握手初始化*/
 	if (xptssl->handshake_stat == XPRT_SSL_NONHANDSHAKE) {
+#ifdef XPRT_DEBUG
 		ssl_stack_error_clear();
+#endif
 		rc = SSL_set_fd(ssl, xprt_fd(xprt));
 		if (skp_unlikely(rc!=1)) {
 			log_error("initial SSL handshake failed : %s",
@@ -1572,12 +1573,15 @@ int xprt_ssl_handshake(struct xprt *xprt, unsigned long event)
 		}
 
 		/*首次由写触发，由于写事件只触发一次，所以需要保存，以便握手成功后恢复*/
+		xptssl->ev_mask = -1;
 		if (event & EVENT_WRITE)
 			xptssl->ev_mask = EVENT_WRITE;
 		xptssl->handshake_stat = XPRT_SSL_HANDSHAKING;
 	}
 
+#ifdef XPRT_DEBUG
 	ssl_stack_error_clear();
+#endif
 	/*可能发生多次握手*/
 	rc = SSL_do_handshake(ssl);
 	if (skp_likely(rc == 1)) {

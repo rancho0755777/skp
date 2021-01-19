@@ -26,7 +26,7 @@ extern const char *get_timestamp_string(void);
 	(__ptr = strrchr(__fname, '/')) ? (__ptr + 1) : __fname;	\
 })
 
-#define ___x_log(LEVEL, log_type, fmt, file, line, func, ...)		\
+#define ___x_log(LEVEL, log_type, fmt, file, line, func, ...)	\
 	fprintf(stderr, LEVEL "%s, %5d, [" log_type "] "			\
 		"[%10s] %15s:%4d[%-25s] - " fmt "\n",					\
 		get_timestamp_string(), get_thread_id(), XX_MODULE_NAME,\
@@ -134,38 +134,38 @@ static inline void dump_stack(void) {}
 
 /*todo : print info of stack*/
 
-#define BUG()                         \
-	do {                              \
-		log_error("BUG and abort()"); \
-		dump_stack();                 \
-		abort();                      \
+#define BUG()                         		\
+	do {                              		\
+		log_error("BUG and abort()"); 		\
+		dump_stack();                 		\
+		abort();                      		\
 	} while (0)
 
-#define WARN(cond, fmt, ...)          \
-	do {                              \
-		bool _c = !!(cond);           \
-		if (skp_unlikely(_c)) {           \
-			log_warn(fmt, ##__VA_ARGS__); \
-		}                             \
+#define WARN(cond, fmt, ...)          		\
+	do {                              		\
+		bool _c = !!(cond);           		\
+		if (skp_unlikely(_c)) {           	\
+			log_warn(fmt, ##__VA_ARGS__); 	\
+		}                             		\
 	} while (0)
 
-#define BUG_ON(cond)                  \
-	do {                              \
-		bool _c = !!(cond);           \
-		if (skp_unlikely(_c)) {           \
-			log_error("BUG: " #cond); \
-			dump_stack();             \
-			abort();                  \
-		}                             \
+#define BUG_ON(cond)                  		\
+	do {                              		\
+		bool _c = !!(cond);           		\
+		if (skp_unlikely(_c)) {           	\
+			log_error("BUG: " #cond); 		\
+			dump_stack();             		\
+			abort();                  		\
+		}                             		\
 	} while (0)
 
-#define WARN_ON(cond)                 \
-	({                                \
-		bool _c = !!(cond);           \
-		if (skp_unlikely(_c)) {           \
+#define WARN_ON(cond)                 		\
+	({                                		\
+		bool _c = !!(cond);           		\
+		if (skp_unlikely(_c)) {          	\
 			log_warn("WARNING : %s", #cond);\
-		}                             \
-		skp_unlikely(_c);                 \
+		}                             		\
+		skp_unlikely(_c);                 	\
 	})
 
 //////////////////////////////////////////////////////////////////////////////////////////

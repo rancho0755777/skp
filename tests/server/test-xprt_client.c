@@ -138,6 +138,9 @@ static void client_changed(struct xprt *xprt, unsigned long stats)
 {
 	struct my_client *client = to_my_client(xprt);
 	if (stats & XPRT_OPENED) {
+		/*dispatch到相同的CPU上*/
+		int c = uev_stream_getcpu(xprt_ev(xprt));
+		uev_timer_setcpu(&client->timer, c);
 		/*连接成功，你可以同步删除定时器，然后重新将其分配到该回调的所在事件上下文中*/
 		/*初始化发送量*/
 		client->nr_send = BUFSIZE;

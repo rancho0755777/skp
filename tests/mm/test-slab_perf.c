@@ -164,7 +164,7 @@ int main(int argc, char **argv)
 {
 	struct cache cache;
 #ifdef UMEM_CACHE_TEST
-	uthread_t free_thd[1];
+	uthread_t free_thd[2];
 	uthread_t alloc_thd[2];
 #else
 	uthread_t free_thd[NR_CPUS/2];

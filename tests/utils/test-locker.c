@@ -10,15 +10,15 @@ static uint32_t SEQ = (1U << 24);
 
 #define TEST_START() \
 do {							\
-	uint64_t _start, _end;		\
+	cycles_t _start, _end;		\
 	volatile long X = 0;	\
-	_start = abstime(0, 0); \
+	_start = get_cycles(); \
 	for (volatile uint32_t i = 0; i < SEQ; i++) { \
 
 #define TEST_FINISH(name) \
 	}							\
-	_end = abstime(0, 0);	\
-	printf("[%s] cost : %lu ns\n", name, (long)(_end - _start) / SEQ); \
+	_end = escape_cycles(_start);	\
+	printf("[%s] cost : %lu ns\n", name, (long)cycles_to_ns(_end) / SEQ); \
 } while (0)
 
 int main(int argc, char const *argv[])
@@ -40,7 +40,7 @@ int main(int argc, char const *argv[])
 /*benchmark*/
 	TEST_START()
 		X += prandom_int(1, 100);
-	TEST_FINISH("base");
+	TEST_FINISH("random base");
 
 /*spinlock*/
 	TEST_START()

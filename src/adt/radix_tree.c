@@ -81,7 +81,7 @@ struct preload_tls {
 
 #ifdef UMALLOC_MANGLE
 /* Radix tree node cache. */
-static umem_cache_t *node_allocater = NULL;
+static umem_cache_t *node_allocator = NULL;
 #endif
 
 static __thread struct preload_tls *preload_tls = NULL;
@@ -119,18 +119,18 @@ static inline void preload_init(void)
 {
 	struct preload_tls *tls;
 #ifdef UMALLOC_MANGLE
-	struct umem_cache_s *cache = node_allocater;
+	struct umem_cache_s *cache = node_allocator;
 
 	if (skp_likely(READ_ONCE(cache)))
 		goto done;
 
 	big_lock();
-	if (skp_likely(!node_allocater)) {
+	if (skp_likely(!node_allocator)) {
 		cache = umem_cache_create("radix tree", sizeof(struct radix_tree_node),
 						0, SLAB_RECLAIM|SLAB_HWCACHE_ALIGN);
 		BUG_ON(!cache);
 		smp_wmb();
-		WRITE_ONCE(node_allocater, cache);
+		WRITE_ONCE(node_allocator, cache);
 	}
 	big_unlock();
 
@@ -209,7 +209,7 @@ void radix_tree_preload(void)
 	while (tls->nr < NODE_CACAH_MAX/2) {
 
 #ifdef UMALLOC_MANGLE
-		node = umem_cache_alloc(node_allocater);
+		node = umem_cache_alloc(node_allocator);
 #else
 		node = malloc(sizeof(struct radix_tree_node));
 #endif

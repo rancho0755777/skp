@@ -65,17 +65,18 @@ static void *atomic64_test(void *arg)
 }
 
 static uint32_t SEQ = (1U << 30);
-#define TEST_START() 			\
-do {							\
-	uint64_t _start, _end;		\
-	volatile long X = 0;	\
-	_start = abstime(0, 0); \
-	for (volatile uint32_t i = 0; i < SEQ; i++) { \
+#define TEST_START() 								\
+do {												\
+	cycles_t _end;									\
+	volatile long X = 0;							\
+	cycles_t _start = get_cycles();					\
+	for (volatile uint32_t i = 0; i < SEQ; i++) { 	\
 
-#define TEST_END(name) 			\
-	}							\
-	_end = abstime(0, 0);	\
-	printf("[%s] cost : %.3lf ns\n", name, (double)(_end - _start) / SEQ); \
+#define TEST_END(name) 								\
+	}												\
+	_end = escape_cycles(_start);					\
+	printf("[%s] cost : %.3lf ns\n", name, 			\
+		(double)(cycles_to_ns(_end)) / SEQ); 		\
 } while (0)
 
 int main(int argc, char **argv)

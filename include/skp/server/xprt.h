@@ -352,6 +352,7 @@ extern void ssl_stack_error_clear(void);
 /*
  * 设置默认的cert 和 key
  * 必须保证 cert 和 key 指针的持久有效性
+ * 必须要在 xprt_ssl_init() 之前设置
  */
 extern int ssl_set_default_certkey(const char *cert, const char *key);
 
@@ -360,7 +361,7 @@ extern const char *xprt_ssl_error(const struct xprt_ssl*, int);
 /**
  * 构造 一个继承 struct xprt_ssl 用于初始化 xprt_ssl 的字段
  * @param opt 如果不为0，则根据 opt 是客户端还是服务器端 使用默认的上下文
- * @param ctx 如果为0，则使用 变参 ctx
+ * @param ctx 如果opt为0，则使用 变参 ctx
  */
 extern int xprt_ssl_init(struct xprt_ssl *, unsigned long opt, .../*ctx*/);
 

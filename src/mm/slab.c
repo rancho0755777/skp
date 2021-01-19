@@ -1575,7 +1575,7 @@ static void objpool_flush(struct umem_cache_s *s, bool direct)
 		opool.nr = 0;
 		opool.verison++;
 	} while (!cmpxchg_double(&pool->nr_version, &pool->head,
-					nr_version, opool.head, opool.nr_version, NULL));
+				nr_version, opool.head, opool.nr_version, NULL));
 
 	opool.nr_version = nr_version;
 	static_mb();
@@ -1619,7 +1619,7 @@ again:
 		opool.nr+=1;
 		opool.verison+=1;
 	} while (!cmpxchg_double(&pool->nr_version, &pool->head,
-					nr_version, opool.head, opool.nr_version, (void*)x));
+				nr_version, opool.head, opool.nr_version, (void*)x));
 
 	sub_alloc_size(s->size);
 	return true;
@@ -1871,16 +1871,15 @@ static void cache_shrink(umem_cache_t *s)
 	}
 
 	SLAB_BUG_ON(s->flags & __SLAB_SHRINKING);
-	smp_wmb();
 	s->flags |= __SLAB_SHRINKING;
-	smp_mb();
+	smp_wmb();
 
 	/*锁住slab描述符后，部分链表中的 page->inuse 只会减少*/
 	for_each_page_safe(page, next, cache_partial(s)) {
 		/*
-		 * 为了排序不必加锁页，这时可能正有对象在释放
 		 * 必须以 trylock 方式对页加锁，否则可能死锁，比如
 		 * @see deactivate_slab()
+		 * @see __slab_free()
 		 */
 		uint32_t inuse = READ_ONCE(page->inuse);
 		if (!inuse && slab_trylock(page)) {
@@ -1921,33 +1920,33 @@ void umem_cache_shrink_all(void)
 	struct umem_cache_s *s;
 
 	/*防止递归回调此函数*/
-	static __thread uint8_t shrinking = 0;
-
-	if (skp_unlikely(shrinking))
-		return;
+	static uint8_t shrinking = 0;
 
 	if (READ_ONCE(slab_state) < SLAB_COMP) {
 		pgcache_reclaim();
 		return;
 	}
 
-	shrinking = 1;
+	if (skp_unlikely(shrinking))
+		return;
+
 	static_mb();
+	if (!cmpxchg(&shrinking, 0, 1))
+		return;
 
 	log_debug("start shrink all of slab");
 
 	cache_reclaim();
 
 	down_read(&slub_lock);
-	for_each_cache_reverse(s) {
+	for_each_cache_reverse(s)
 		cache_shrink(s);
-	}
 	up_read(&slub_lock);
 	log_debug("finish shrink all of slab");
 
 	pgcache_reclaim();
 
-	shrinking = 0;
+	xchg(&shrinking, 0);
 }
 
 static inline bool slab_unmergeable(struct umem_cache_s *s)

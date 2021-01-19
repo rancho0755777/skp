@@ -8,7 +8,7 @@ volatile static bool __wait = false;
 
 static int thread_cb(void *args)
 {
-	uint64_t start, end;
+	cycles_t start, end;
 	volatile long x = 0;
 	uint32_t ivalues[100];
 	double fvalues[100];
@@ -44,20 +44,20 @@ static int thread_cb(void *args)
 
 	srandom(time(0));
 	x = 0;
-	start = abstime(0, 0);
+	start = get_cycles();
 	for (int i = 0; i < SEQ; i++) {
 		x += random();
 	}
-	end = abstime(0, 0);
-	log_info("(%ld)random cost : %lu", x, (long)(end - start) / SEQ);
+	end = escape_cycles(start);
+	log_info("(%ld)random cost : %lu", x, (long)(cycles_to_ns(end)) / SEQ);
 
 	x = 0;
-	start = abstime(0, 0);
+	start = get_cycles();
 	for (int i = 0; i < SEQ; i++) {
 		x += prandom();
 	}
-	end = abstime(0, 0);
-	log_info("(%ld)prandom cost : %lu", x, (long)(end - start) / SEQ);
+	end = escape_cycles(start);
+	log_info("(%ld)prandom cost : %lu", x, (long)(cycles_to_ns(end)) / SEQ);
 
 	return 0;
 }

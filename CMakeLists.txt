@@ -8,9 +8,9 @@ endif(NOT UNIX)
 #set(CMAKE_C_COMPILER "/usr/bin/gcc")
 #set(CMAKE_CXX_COMPILER "/usr/bin/g++")
 
-set(WERROR ON CACHE BOOL "Treat Warnings as Errors.")
+set(WERROR OFF CACHE BOOL "Treat Warnings as Errors.")
 set(BUILD_SHARED_LIBS ON CACHE BOOL "Build shared libraries")
-set(INSTALL_TEMP OFF CACHE BOOL "Install project to /tmp/install")
+set(INSTALL_TEMP ON CACHE BOOL "Install project to /tmp/install")
 
 find_package(Threads REQUIRED)
 if(THREADS_HAVE_PTHREAD_ARG)

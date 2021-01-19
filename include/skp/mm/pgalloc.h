@@ -8,8 +8,9 @@
 #ifndef __US_PGALLOC_H__
 #define __US_PGALLOC_H__
 
-#include "../utils/uref.h"
 #include "../adt/list.h"
+#include "../utils/uref.h"
+#include "../process/wait.h"
 #include "mmzone.h"
 
 __BEGIN_DECLS
@@ -322,6 +323,11 @@ static inline void lock_page(struct vpage *page)
 {
 	if (TestSetPageLocked(page))
 		__lock_page(page);
+}
+
+static inline void wake_up_page(struct vpage *page, int bit_nr)
+{
+	wake_up_bit(&page->flags, bit_nr);
 }
 
 /*
