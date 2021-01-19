@@ -63,12 +63,12 @@ static inline void write_seqlock(seqlock_t *sl)
 {
 	spin_lock(&sl->lock);
 	++sl->sequence;
-	smp_mb();
+	smp_wmb();
 }	
 
 static inline void write_sequnlock(seqlock_t *sl) 
 {
-	smp_mb();
+	smp_wmb();
 	sl->sequence++;
 	spin_unlock(&sl->lock);
 }
@@ -79,7 +79,7 @@ static inline int write_tryseqlock(seqlock_t *sl)
 
 	if (ret) {
 		++sl->sequence;
-		smp_mb();
+		smp_wmb();
 	}
 	return ret;
 }
@@ -88,14 +88,14 @@ static inline int write_tryseqlock(seqlock_t *sl)
 static inline unsigned read_seqbegin(const seqlock_t *sl)
 {
 	unsigned ret = READ_ONCE(sl->sequence);
-	smp_mb();
+	smp_rmb();
 	return ret;
 }
 
 /** @return true  需要重试*/
 static inline bool read_seqretry(const seqlock_t *sl, unsigned iv)
 {
-	smp_mb();
+	smp_rmb();
 	return !!((iv & 1) | (READ_ONCE(sl->sequence) ^ iv));
 }
 
@@ -118,7 +118,7 @@ typedef struct seqcount {
 static inline unsigned read_seqcount_begin(const seqcount_t *s)
 {
 	unsigned ret = s->sequence;
-	smp_mb();
+	smp_rmb();
 	return ret;
 }
 
@@ -130,7 +130,7 @@ static inline unsigned read_seqcount_begin(const seqcount_t *s)
  */
 static inline bool read_seqcount_retry(const seqcount_t *s, unsigned iv)
 {
-	smp_mb();
+	smp_rmb();
 	return !!((iv & 1) | (s->sequence ^ iv));
 }
 
@@ -141,12 +141,12 @@ static inline bool read_seqcount_retry(const seqcount_t *s, unsigned iv)
 static inline void write_seqcount_begin(seqcount_t *s)
 {
 	s->sequence++;
-	smp_mb();
+	smp_wmb();
 }
 
 static inline void write_seqcount_end(seqcount_t *s)
 {
-	smp_mb();
+	smp_wmb();
 	s->sequence++;
 }
 

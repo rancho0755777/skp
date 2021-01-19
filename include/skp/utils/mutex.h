@@ -98,6 +98,22 @@ extern void mutex_lock(mutex_t *mutex);
 extern void mutex_unlock(mutex_t *mutex);
 extern bool mutex_trylock(mutex_t *mutex);
 
+static inline bool mutex_is_contended(mutex_t *mutex)
+{
+	return !list_empty(&mutex->wait_list);
+}
+
+static inline bool cond_resched_mutex(mutex_t * mutex)
+{
+	if (mutex_is_contended(mutex)) {
+		mutex_unlock(mutex);
+		sched_yield();
+		mutex_lock(mutex);
+		return true;
+	}
+	return false;
+}
+
 typedef struct recursive_mutex {
 	mutex_t mutex;
 	int32_t owner;

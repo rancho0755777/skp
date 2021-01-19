@@ -5,6 +5,7 @@
 
 #include <skp/utils/uref.h>
 #include <skp/utils/spinlock.h>
+#include <skp/utils/mutex.h>
 #include <skp/utils/bitmap.h>
 #include <skp/adt/idr.h>
 #include <skp/process/event.h>
@@ -28,12 +29,12 @@
 # define check_remain_stream(slot) do { 							\
 for (int i = 0; slot->nr_events && i < PER_CPU_EVENTS; i++) { 		\
 	struct uev_event *event = idr_remove(&slot->evidr, i); 			\
-	if (skp_unlikely(event)) 											\
+	if (skp_unlikely(event)) 										\
 		log_warn("stream %p was still left in event slot", event); 	\
 }} while(0)
 # define check_remain_signal(slot) do {								\
 for (int i = 0; slot->siginfo && i < NSIG; i++) { 					\
-	if (skp_unlikely(test_bit(i, slot->siginfo->registered))) 			\
+	if (skp_unlikely(test_bit(i, slot->siginfo->registered))) 		\
 		log_warn("signal %d was still in registering", i); 			\
 }} while (0)
 #else
@@ -44,10 +45,12 @@ for (int i = 0; slot->siginfo && i < NSIG; i++) { 					\
 #endif
 
 #define EV_RUNNING 0
+/*信号处理的槽位*/
+#define EV_SIGSLOT 0
 #define EV_SIGID U32_MAX
 
 /*默认单个线程能管理事件最值*/
-#define PER_POLL_EVENTS_MAX (U16_MAX - 1)
+#define PER_POLL_EVENTS_MAX U16_MAX
 /*事件线程默认检查时间，毫秒*/
 #define EV_POLL_INTERVAL 5000u
 
@@ -137,6 +140,7 @@ static int worker_cb(void *arg);
 #define slot_lock(s) mutex_lock(&(s)->lock)
 #define slot_trylock(s) mutex_trylock(&(s)->lock)
 #define slot_unlock(s) mutex_unlock(&(s)->lock)
+#define slot_maybe_contented(slot) (cond_resched_mutex(&(slot)->lock))
 
 #define __def_core_flag_op(op)									\
 static bool test_##op(struct uev_core *core)					\
@@ -181,15 +185,12 @@ static inline struct uev_core *current_ev_core(void)
 
 static inline struct uev_core *get_current_core(struct uev_slot *slot)
 {
-	smp_rmb();
 	return READ_ONCE(((struct uev_worker*)(slot->worker_thread))->current);
 }
 
 static inline void set_current_core(struct uev_core *event)
 {
-	//smp_wmb();
 	WRITE_ONCE(((struct uev_worker*)current)->current, event);
-	//smp_mb();
 }
 
 #define __def_get_currev(name, field)										\
@@ -457,41 +458,37 @@ static __always_inline int32_t lookup_free_slot(void)
 	return -ENODEV;
 }
 
-static void stream_disable_locked(struct uev_stream *stream, uint16_t mask)
+static __always_inline
+void stream_disable_locked(struct uev_slot *slot, struct uev_stream *stream,
+		uint16_t mask)
 {
-	struct uev_slot *slot;
 	struct poll_event pe;
-	uint16_t old = READ_ONCE(stream->mask);
-	mask &= (EVENT_ACTION_MASK | EVENT_EDGE);
-	mask = old & (~mask);
-	if ((mask == old)
-#ifdef __apple__
-		 /*apple 需要手动的启动边沿触发*/
-		 && !(mask & EVENT_EDGE)
-#endif
-		 )
+
+	if (!mask)
 		return;
 
-	slot = loc_slot(uev_core_idx(&stream->core));
-	if (skp_unlikely(!slot))
+	mask &= (EVENT_ACTION_MASK | EVENT_EDGE);
+	mask = stream->mask & (~mask);
+	/*如果相等则忽略*/
+	if (mask == stream->mask)
 		return;
 
 	poll_event_init(&pe, stream->id, stream->fd, mask);
 	reactor_modify_event(slot, stream, &pe);
-	//smp_wmb();
 	WRITE_ONCE(stream->mask, mask);
-	//smp_mb();
 }
 
 static void process_streams(struct uev_slot *slot, int nr_ready)
 {
 	int j;
 	uev_stream_fn func;
+	unsigned long flags;
+	uint16_t rmask, omask;
 	struct uev_stream *ev;
 	struct poll_event *pe;
 	uint32_t nr_invokes = 0;
 
-	if (!READ_ONCE(slot->nr_events) || skp_unlikely(!nr_ready))
+	if (skp_unlikely(!slot->nr_events) || !nr_ready)
 		return;
 
 	/*增加IO随机性*/
@@ -505,24 +502,36 @@ static void process_streams(struct uev_slot *slot, int nr_ready)
 		 *事件系统却不知道这个事实*/
 		ev = stream_lookup(slot, poll_get_fd(pe), poll_get_id(pe));
 		/*流事件可能被异步删除了*/
-		if (skp_unlikely(!ev))
+		if (skp_unlikely(!ev)) {
+			slot_maybe_contented(slot);
 			continue;
+		}
 
+		rmask = 0;
 		nr_invokes++;
-		/*如果是边沿触发，从内核中删除本次已触发的侦听事件*/
-		if (skp_likely((ev->core.flags & EVENT_ATTACHED)) &&
-				(ev->mask & EVENT_EDGE))
-			reactor_disable_event(slot, ev, pe);
 
-		/*被异步修改了？*/
-		if ((!(pe->mask & ev->mask)) &&
-				!(pe->mask & (EVENT_ERROR | EVENT_EOF)))
+		omask = ev->mask;
+		flags = ev->core.flags;
+		if (skp_likely(flags & EVENT_ATTACHED)) {
+#ifdef __apple__
+			/*如果是边沿触发，从内核中删除本次已触发的侦听事件*/
+			if (skp_unlikely(omask & EVENT_EDGE))
+				rmask = pe->mask;
+			else
+#endif
+			/*移除一次性写事件*/
+			if (skp_likely(flags & EVENT_WRITE_ONCE) &&
+				skp_likely(!(omask & EVENT_EDGE)) && (pe->mask & EVENT_WRITE))
+				rmask = EVENT_WRITE;
+			stream_disable_locked(slot, ev, rmask);
+		}
+
+		/*关注的事件可能被异步修改了*/
+		if (skp_unlikely(!(pe->mask & omask)) &&
+				!(pe->mask & (EVENT_ERROR | EVENT_EOF))) {
+			slot_maybe_contented(slot);
 			continue;
-
-		/*移除一次性写事件*/
-		if (skp_likely(ev->core.flags & EVENT_WRITE_ONCE) &&
-				pe->mask & EVENT_WRITE)
-			stream_disable_locked(ev, EVENT_WRITE);
+		}
 
 		func = ev->func;
 		slot_invoke_start(slot, &ev->core);
@@ -542,7 +551,6 @@ static inline uint32_t timer_timedout(struct uev_timer *timer, uint64_t now)
 		return EV_POLL_INTERVAL;
 	if (timer->node.value > now)
 		return (uint32_t)((timer->node.value - now)/1000000);
-	test_set_TIMEDOUT(&timer->core);
 	return 0;
 }
 
@@ -571,6 +579,7 @@ static void process_timers(struct uev_slot *slot, uint64_t now)
 
 		nr_invokes++;
 		func = timer->func;
+		test_set_TIMEDOUT(&timer->core);
 		slot_invoke_start(slot, &timer->core);
 		if (skp_likely(func))
 			func(timer);
@@ -818,13 +827,13 @@ void __sysevent_init(bool single)
 		miniheap_init(&slot->timer_heap);
 
 		/*signal*/
-		if (cpu == 0) {
+		if (cpu == EV_SIGSLOT) {
 			slot->siginfo = malloc(sizeof(*slot->siginfo));
 			BUG_ON(!slot->siginfo);
 			memset(slot->siginfo, 0, sizeof(*slot->siginfo));
 		}
 		/*stream*/
-		BUG_ON(idr_init_base(&slot->evidr, 0, PER_CPU_EVENTS));
+		BUG_ON(idr_init_base(&slot->evidr, 0, PER_CPU_EVENTS - 1));
 		slot->ready_size = min_t(int, PER_POLL_EVENTS, PER_CPU_EVENTS);
 		slot->ready_events=malloc(sizeof(*slot->ready_events)*slot->ready_size);
 		BUG_ON(!slot->ready_events);
@@ -974,7 +983,6 @@ int __uev_stream_modify(struct uev_stream *stream, uint16_t mask)
 		}
 	}
 
-	//smp_wmb();
 	WRITE_ONCE(stream->mask, mask);
 	put_slot_locked(slot);
 	return 0;
@@ -1491,28 +1499,24 @@ void rcu_barrier(void)
 
 int uev_core_setcpu(struct uev_core *core, int cpu)
 {
+	uint32_t hint = cpu; /*必须初始化*/
 	unsigned long nflags, flags, idx;
-	uint32_t hint = single_mode?0:cpu; /*必须初始化*/
-
-	BUG_ON(!sysevent_up);
 
 	/*已经设置则忽略*/
 	idx = uev_core_idx(core);
-	if (single_mode && !idx)
-		return 0;
-
 	if (idx >= 0 && idx < NR_CPUS)
 		return idx;
 
-	/*可能期望由系统分配索引*/
-	if ((cpu < 0 || skp_unlikely(cpu >= NR_CPUS)) && !single_mode) {
-		if (uev_core_type(core)==EVENT_SIGNAL) {
-			/*始终在0号CPU上调度信号*/
-			hint = 0;
+	if (single_mode) {
+		hint = 0;
+	} else if (uev_is_signal(core)) {
+		hint = EV_SIGSLOT;
+	} else if (cpu < 0 || skp_unlikely(cpu >= NR_CPUS)) {
+		cpu = thread_cpu();
+		if (cpu > -1) {
+			hint = cpu;
 		} else {
-			hint = thread_cpu();
-			if (hint < 0)
-				hint = xadd32(&dispatch_idx, 1);
+			hint = xadd32(&dispatch_idx, 1);
 		}
 		hint &= (NR_CPUS-1);
 	}
@@ -1523,7 +1527,8 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 	/*流事件需要检查ID是否足够*/
 	if (uev_is_stream(core)) {
 		struct uev_slot *slot = &per_cpu(uev_slots, hint);
-		if (skp_unlikely(!idr_nr_free(&slot->evidr))) {
+		/*为了更好的防止ABA，保留一些槽位*/
+		if (skp_unlikely(idr_nr_free(&slot->evidr) < 3)) {
 			log_warn("slot [%d] not have enough id", hint);
 			cpu = lookup_free_slot();
 			if (skp_unlikely(cpu < 0))
@@ -1533,7 +1538,6 @@ int uev_core_setcpu(struct uev_core *core, int cpu)
 	}
 
 	/*原子的修改*/
-	smp_rmb();
 	cpu = hint;
 	idx = uev_core_mkidx(cpu);
 	flags = READ_ONCE(core->flags);
