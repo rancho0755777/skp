@@ -10,11 +10,11 @@
 //#define TEST_USE_PMUTEX
 
 #ifdef TEST_USE_MUTEX
-DEFINE_MUTEX(locker);
+static DEFINE_MUTEX(locker);
 #define TEST_LK() mutex_lock(&locker)
 #define TEST_ULK() mutex_unlock(&locker)
 #elif defined(TEST_USE_SPINLOCK)
-DEFINE_SPINLOCK(locker);
+static DEFINE_SPINLOCK(locker);
 #define TEST_LK() spin_lock(&locker)
 #define TEST_ULK() spin_unlock(&locker)
 #elif defined(TEST_USE_PMUTEX)

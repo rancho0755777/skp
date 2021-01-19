@@ -111,10 +111,11 @@ __ringb_update_tail(struct ringb_headtail *ht, uint32_t old_val, uint32_t new_va
 	/*
 	 * If there are other enqueues/dequeues in progress that preceded us,
 	 * we need to wait for them to complete
+	 * while (READ_ONCE(ht->tail) != old_val)
+	 *	 cpu_relax();
 	 */
 	if (!single)
-		while (skp_unlikely(READ_ONCE(ht->tail) != old_val))
-			cpu_relax();
+		__cond_load_acquire(&ht->tail, (VAL==old_val));
 
 	WRITE_ONCE(ht->tail, new_val);
 }
@@ -138,6 +139,7 @@ uint32_t __ringb_move_prod_head(struct ringb *r, uint32_t is_sp, uint32_t n,
 		uint32_t behavior, uint32_t *old_head, uint32_t *new_head,
 		uint32_t *free_entries)
 {
+	uint32_t seq = 0;
 	uint32_t max = n;
 	const uint32_t capacity = r->capacity;
 
@@ -156,8 +158,13 @@ uint32_t __ringb_move_prod_head(struct ringb *r, uint32_t is_sp, uint32_t n,
 
 		/*
 		 * 两个无符号减法，即使回绕也不会又问题
+		 *     c.t       c.h        p.t       p.h
+		 * -----+---------+----------+---------+-------
+		 *      | pending |  stable  | pending |
+		 * -----+---------+----------+---------+-------
+		 *    ->|<- queued element ->|         |<- free
 		 */
-		*free_entries = (capacity + READ_ONCE(r->cons.tail) - *old_head);
+		*free_entries = capacity - (*old_head - READ_ONCE(r->cons.tail));
 
 		/* check that we have enough room in ring */
 		if (skp_unlikely(n > *free_entries))
@@ -174,7 +181,16 @@ uint32_t __ringb_move_prod_head(struct ringb *r, uint32_t is_sp, uint32_t n,
 #endif
 			break;
 		}
-	} while (skp_unlikely(!cmpxchg(&r->prod.head, *old_head, *new_head)));
+
+		if (skp_likely(cmpxchg(&r->prod.head, *old_head, *new_head)))
+			break;
+
+		if (skp_likely(++seq & 3)) {
+			cpu_relax();
+		} else {
+			sched_yield();
+		}
+	} while (1);
 
 	return n;
 }
@@ -191,6 +207,7 @@ uint32_t __ringb_move_cons_head(struct ringb *r, uint32_t is_sc, uint32_t n,
 		uint32_t behavior, uint32_t *old_head, uint32_t *new_head,
 		uint32_t *entries)
 {
+	uint32_t seq = 0;
 	uint32_t max = n;
 
 	/* move cons.head atomically */
@@ -209,6 +226,11 @@ uint32_t __ringb_move_cons_head(struct ringb *r, uint32_t is_sc, uint32_t n,
 
 		/*
 		 * 两个无符号减法，即使回绕也不会又问题
+		 *     c.t       c.h        p.t       p.h
+		 * -----+---------+----------+---------+-------
+		 *      | pending |  stable  | pending |
+		 * -----+---------+----------+---------+-------
+		 *      |<- queued element ->|
 		 */
 		*entries = READ_ONCE(r->prod.tail) - *old_head;
 
@@ -227,7 +249,16 @@ uint32_t __ringb_move_cons_head(struct ringb *r, uint32_t is_sc, uint32_t n,
 #endif
 			break;
 		}
-	} while (skp_unlikely(!cmpxchg(&r->cons.head, *old_head, *new_head)));
+
+		if (skp_likely(cmpxchg(&r->cons.head, *old_head, *new_head)))
+			break;
+
+		if (skp_likely(++seq & 3)) {
+			cpu_relax();
+		} else {
+			sched_yield();
+		}
+	} while (1);
 
 	return n;
 }
