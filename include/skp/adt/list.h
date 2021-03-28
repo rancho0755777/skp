@@ -60,7 +60,6 @@ static inline void list_add(struct list_head *_new_, struct list_head *head)
 	__list_add(_new_, head, head->next);
 }
 
-
 /**
  * list_add_tail - add a _new_ entry
  * @_new_: _new_ entry to be added
@@ -193,8 +192,8 @@ static inline bool list_empty(const struct list_head *head)
  */
 static inline bool list_empty_careful(const struct list_head *head)
 {
-	struct list_head *next = head->next;
-	return (next == head) && (next == head->prev);
+	struct list_head *next = READ_ONCE(head->next);
+	return (next == head) && (next == READ_ONCE(head->prev));
 }
 
 /**

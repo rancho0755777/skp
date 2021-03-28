@@ -20,14 +20,17 @@ extern int autoremove_wake_function(wait_queue_t *wait, void *key);
 
 /*这个结构体大多数都在栈中，没有必要对空间进行优化*/
 #define WQ_FLAG_EXCLUSIVE 0x01
+#define WQ_COND_STRUCT						\
+	union {									\
+		int32_t value;						\
+		struct {							\
+			int16_t cond;					\
+			int16_t last_cond;				\
+		};									\
+	}
+
 struct __wait_queue {
-	union {
-		int32_t value;
-		struct {
-			int16_t cond;
-			int16_t last_cond;
-		};
-	};
+	WQ_COND_STRUCT;
 	uint32_t flags;
 	wake_queue_fn func; /*用于唤醒*/
 	struct list_head task_list;

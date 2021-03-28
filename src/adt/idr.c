@@ -45,7 +45,8 @@ int idt_init(struct idt *idt, uint32_t start, uint32_t end)
 	idt->idmap = idmap;
 
 	log_debug("initilize integer id allocator , "
-		"offset %u, bits %u, last_bits : %u", idt->offset, idt->nr_bit, last_bits);
+		"offset %u, bits %u, last_bits : %u", idt->offset, idt->nr_bit,
+		last_bits);
 	return 0;
 }
 

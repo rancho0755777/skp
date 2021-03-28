@@ -265,11 +265,17 @@ static inline void move_page_to_list_tail(struct vpage *page,
 	list_move_tail(&page->lru, head);
 }
 
-#define for_each_page(p, l)				\
+#define for_each_page(p, l)								\
 	list_for_each_entry((p), l, lru)
 
-#define for_each_page_safe(p, n, l)		\
+#define for_each_page_reverse(p, l)						\
+	list_for_each_entry_reverse((p), l, lru)
+
+#define for_each_page_safe(p, n, l)						\
 	list_for_each_entry_safe((p), (n), l, lru)
+
+#define for_each_page_safe_reverse(p, n, l)				\
+	list_for_each_entry_safe_reverse((p), (n), l, lru)
 
 ////////////////////////////////////////////////////////////////////////////////
 static inline int block_order(struct vpage *page)

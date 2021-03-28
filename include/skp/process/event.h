@@ -148,6 +148,7 @@ uev_stream_init(struct uev_stream *stream, int32_t fd, uev_stream_fn func)
  * @return < 0 失败
  */
 extern int __uev_stream_modify(struct uev_stream *, uint16_t mask);
+
 /**
  * 从事件循环中删除对流事件的监控
  * 同步删除时，会等待回调函数执行完毕，并可以指定新的索引，用于迁移其他的CPU线程上

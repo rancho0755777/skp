@@ -59,9 +59,9 @@ static int reactor_##name##_event(struct uev_slot *slot,			\
 		EV_SET64(&ke[nr++], ue->fd, EVFILT_EXCEPT,					\
 			EV_##op, 0, 0, pe->data, 0, 0);							\
 	}																\
-	if (skp_unlikely(!nr)) return 0;									\
+	if (skp_unlikely(!nr)) return 0;								\
 	rc = kevent64(reactor->kqfd, &ke[0], nr, NULL, 0, 0, NULL);		\
-	if (skp_unlikely(rc < 0)) {											\
+	if (skp_unlikely(rc < 0)) {										\
 		log_warn("kevent64/%s failed : %s", #op, strerror_local());	\
 		return -errno;												\
 	}																\
@@ -203,7 +203,7 @@ static inline int __reactor_##name##_signal(struct uev_slot *slot, 			\
 	EVENT_BUG_ON(!slot->siginfo);											\
 	EV_SET64(&ke, signo, EVFILT_SIGNAL, EV_##op, 0, 0, data, 0, 0);			\
 	rc = kevent64(reactor->kqfd, &ke, 1, NULL, 0, 0, NULL);					\
-	if (skp_unlikely(rc < 0)) {													\
+	if (skp_unlikely(rc < 0)) {												\
 		log_warn("kevent64/%s failed : %s", #op, strerror_local());			\
 		return -errno;														\
 	}																		\

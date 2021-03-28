@@ -61,7 +61,7 @@ struct dict_ops {
 };
 
 struct dict {
-	int64_t rehashidx; /*-1 表示正在rehash*/
+	int64_t rehashidx; /*!=-1 表示正在rehash*/
 	uint16_t expand_ratio;
 	uint16_t reduce_ratio;
 	uint32_t init_size;

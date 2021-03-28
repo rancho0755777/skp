@@ -118,13 +118,7 @@ void __wake_up_locked(wait_queue_head_t *q, int nr, void *key)
 int wait_on_timeout(wait_queue_t *wait, int timedout)
 {
 	int rc = 1;
-	union {
-		int32_t value;
-		struct {
-			int16_t cond;
-			int16_t last_cond;
-		};
-	} v;
+	WQ_COND_STRUCT v;
 
 	v.value = READ_ONCE(wait->value);
 	if (v.cond == v.last_cond)
