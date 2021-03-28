@@ -71,10 +71,8 @@ typedef struct dict_node * dictnode_t;
 static inline dictnode_t __erase_first_node(struct dict_bucket *bucket)
 {
 	dictnode_t node = bucket->head;
-	if (node) {
-		bucket->head = node->next;
-		node->next = DICT_NODE_POSITION;
-	}
+	if (node)
+		WRITE_ONCE(bucket->head, node->next);
 	return node;
 }
 
@@ -82,14 +80,16 @@ static inline void __insert_node(struct dict_bucket *bucket, dictnode_t node,
 		dictnode_t *link)
 {
 	node->next = *link;
-	*link = node;
+	//*link = node;
+	WRITE_ONCE(*link, node);
 }
 
 static inline void __erase_node(struct dict_bucket *bucket, dictnode_t node,
 		dictnode_t *link)
 {
-	*link = node->next;
-	node->next = DICT_NODE_POSITION;
+	//*link = node->next;
+	/*一定程度上保证迭代的有效性*/
+	WRITE_ONCE(*link, node->next);
 }
 
 static inline uint32_t __get_nodes(struct dict_bucket *bucket)
@@ -151,7 +151,7 @@ static __always_inline void __bucket_rehash(struct dict *dict,
 	struct dict_bucket *desc;
 
 	while (1) {
-		/*remove from rbtree*/
+		/*remove from bucket*/
 		node = __erase_first_node(bucket);
 		if (skp_unlikely(!node))
 			break;
@@ -164,7 +164,7 @@ static __always_inline void __bucket_rehash(struct dict *dict,
 		/*prepare insert*/
 		desc = __get_bucket(dict->rehash, node->hvalue, &idx);
 
-#ifdef XPRT_DEBUG
+#ifdef DICT_DEBUG
 {
 		struct dict_node *tmp;
 		tmp = __bucket_lookup_node(dict, desc, node, &link);
@@ -526,6 +526,7 @@ static bool __dict_rehash(struct dict *dict, int64_t step)
 	struct dict_bucket *bucket;
 	unsigned long index;
 
+	/*TODO: 有迭代器不允许渐进rehash*/
 	if (!___dict_is_rehashing(dict))
 		return false;
 
