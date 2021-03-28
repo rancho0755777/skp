@@ -682,8 +682,11 @@ static inline void notify_poller(struct uev_slot *slot)
 
 static inline void notify_poller_locked(struct uev_slot *slot, bool updated)
 {
+	/*TODO:判断是否在处理事件，以减少一次IO*/
+	if (!get_current_core(slot))
+		updated = false;
 	put_slot_locked(slot);
-	/*防止阻塞先解锁*/
+	/*防止阻塞先解锁 */
 	if (updated)
 		notify_poller(slot);
 }
