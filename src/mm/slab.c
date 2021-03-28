@@ -1858,8 +1858,8 @@ static int compare_partial(void *_, struct list_head *_a, struct list_head *_b)
 
 static void cache_shrink(umem_cache_t *s)
 {
-	LIST__HEAD(list);
 	struct vpage *page, *next;
+	struct list_head *partial;
 
 	objpool_flush(s, true);
 
@@ -1873,14 +1873,21 @@ static void cache_shrink(umem_cache_t *s)
 	SLAB_BUG_ON(s->flags & __SLAB_SHRINKING);
 	s->flags |= __SLAB_SHRINKING;
 	smp_wmb();
-
+	
+	partial = cache_partial(s);
+	if (skp_unlikely(list_empty(partial)))
+		goto out;
+	
 	/*锁住slab描述符后，部分链表中的 page->inuse 只会减少*/
-	for_each_page_safe(page, next, cache_partial(s)) {
-		/*
-		 * 必须以 trylock 方式对页加锁，否则可能死锁，比如
-		 * @see deactivate_slab()
-		 * @see __slab_free()
-		 */
+	if (!list_is_singular(partial))
+		list_sort(NULL, partial, compare_partial);
+	
+	/*
+	 * 必须以 trylock 方式对页加锁，否则可能死锁，比如
+	 * @see deactivate_slab()
+	 * @see __slab_free()
+	 */
+	for_each_page_safe(page, next, partial) {
 		uint32_t inuse = READ_ONCE(page->inuse);
 		if (!inuse && slab_trylock(page)) {
 			__remove_partial(s, page);
@@ -1888,17 +1895,11 @@ static void cache_shrink(umem_cache_t *s)
 			log_debug("reclaim one slab object : %p, %p[%s]", page, s, s->name);
 			discard_slab(s, page, true);
 		}
-		if (skp_unlikely(!inuse))
-			continue;
-		move_page_to_list_tail(page, &list);
+		if (skp_likely(inuse))
+			break;
 	}
-
-	if (skp_likely(!list_empty(&list))) {
-		if (!list_is_singular(&list))
-			list_sort(NULL, &list, compare_partial);
-		list_splice_tail_init(&list, cache_partial(s));
-	}
-
+	
+out:
 	smp_wmb();
 	s->flags &= ~__SLAB_SHRINKING;
 	cache_unlock(s);
@@ -1927,10 +1928,9 @@ void umem_cache_shrink_all(void)
 		return;
 	}
 
-	if (skp_unlikely(shrinking))
+	if (skp_unlikely(READ_ONCE(shrinking)))
 		return;
 
-	static_mb();
 	if (!cmpxchg(&shrinking, 0, 1))
 		return;
 
