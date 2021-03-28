@@ -297,8 +297,8 @@ static inline uint32_t get_work_pool_id(struct work_struct *work)
 static inline void mark_work_canceling(struct work_struct *work)
 {
 	uint32_t pid = get_work_pool_id(work);
-	set_work_data(work, pid << WQ_WORK_FLAG_BITS,
-		WQ_WORK_CANCELING | WQ_WORK_PENDING);
+	pid <<= WQ_WORK_FLAG_BITS;
+	set_work_data(work, pid, WQ_WORK_CANCELING | WQ_WORK_PENDING);
 }
 
 static inline bool work_is_canceling(struct work_struct *work)
@@ -1539,7 +1539,7 @@ void flush_workqueue(struct workqueue_struct *wq)
 	fwait.insert_seq = READ_ONCE(wq->insert_seq);
 	fwait.remove_seq = READ_ONCE(wq->remove_seq);
 	static_mb();
-
+	
 	add_wait_queue_locked(&wq->wait_flusher, &fwait.wait);
 	log_debug("launch waiting for insert seq : %d, current remove seq : %d",
 		fwait.insert_seq, fwait.remove_seq);
@@ -1822,7 +1822,8 @@ static bool __queue_work(int cpu, struct workqueue_struct *wq,
 		last_pool = get_worker_pool_and_lock(pwq->pool);
 	}
 
-	if (WARN_ON(!last_pool || !pwq->refcnt)) {
+	if (WARN_ON(!last_pool || last_pool->id == WQ_POOL_INVALID_ID ||
+				!pwq->refcnt || (pwq->wq->flags & __WQ_DESTROYING))) {
 		log_warn("workqueue has been destroyed : %p [%s]", wq, wq->name);
 		goto fail;
 	}
