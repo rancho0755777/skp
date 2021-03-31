@@ -118,7 +118,7 @@ struct uev_slot {
 
 	/*poller*/
 	void *reactor; /**< reactor 实现句柄*/
-	struct poll_event *ready_events;
+	struct poll_event *ready_events; /*TODO:移除该数组，转而渐进的转换依赖具体OS的事件就绪数据*/
 	struct uev_siginfo *siginfo; /*仅 0 号 CPU 上有此信号集*/
 
 	wait_queue_head_t wait_queue; /**< 同步队列*/
@@ -1336,14 +1336,14 @@ void async_stream_cb(struct uev_stream *stream, uint16_t mask)
 	nr = atomic_xchg(&async->nr_cnt, -1);
 	EVENT_WARN_ON(nr < 0);
 
-	while(1) {
+	do {
 		ssize_t b = read(async->pipe_fd[0], buff, ARRAY_SIZE(buff));
 		if (skp_likely(b < ARRAY_SIZE(buff))) {
 			EVENT_WARN_ON(!b);
 			EVENT_WARN_ON(b < 0 && errno != EAGAIN);
 			break;
 		}
-	}
+	} while ((nr=atomic_xchg(&async->nr_cnt, -1)));
 
 	if (async->func)
 		async->func(async);

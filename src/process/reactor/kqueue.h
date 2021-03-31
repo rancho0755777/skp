@@ -14,11 +14,11 @@
 
 struct uev_stream;
 struct poll_event;
-struct uev_slot;
+struct uev_looper;
 
 struct kqueue_reactor {
 	int kqfd;
-	uint32_t ready_size;
+	uint32_t poll_size;
 	signal_fn signal_defhdl[NSIG];
 	struct kevent64_s ready_events[0];
 };
@@ -41,12 +41,12 @@ static inline void kqev2mask(const struct kevent64_s *ke, struct poll_event *pe)
  * 实现 reactor 接口
  */
 #define __define_kqueue_ctl(name, op)								\
-static int reactor_##name##_event(struct uev_slot *slot,			\
+static int name##_event(struct uev_looper *looper,					\
 		struct uev_stream *ue, struct poll_event *pe)				\
 {																	\
 	int rc, nr = 0;													\
 	struct kevent64_s ke[3]; 										\
-	struct kqueue_reactor *reactor = slot->reactor;					\
+	struct kqueue_reactor *reactor = looper->reactor;				\
 	if (pe->mask & EVENT_READ) {									\
 		EV_SET64(&ke[nr++], ue->fd, EVFILT_READ,					\
 			EV_##op, 0, 0, pe->data, 0, 0);							\
@@ -76,11 +76,11 @@ __define_kqueue_ctl(enable, ENABLE)
 #undef __define_kqueue_ctl
 
 /*错误返回非零0*/
-static int reactor_create(struct uev_slot *slot)
+static int reactor_create(struct uev_looper *looper)
 {
 	struct kqueue_reactor *
 		reactor = malloc(sizeof(*reactor) +
-			sizeof(reactor->ready_events[0]) * slot->ready_size);
+			sizeof(reactor->ready_events[0]) * looper->poll_size);
 	if (skp_unlikely(!reactor))
 		return -ENOMEM;
 	/*创建多路复用对象*/
@@ -89,29 +89,29 @@ static int reactor_create(struct uev_slot *slot)
 		free(reactor);
 		return -EINVAL;
 	}
-	reactor->ready_size = slot->ready_size;
-	slot->reactor = reactor;
+	reactor->poll_size = looper->poll_size;
+	looper->reactor = reactor;
 
 	return 0;
 }
 
 /*销毁不同实现的私有数据*/
-static void reactor_destroy(struct uev_slot *slot)
+static void reactor_destroy(struct uev_looper *looper)
 {
-	struct kqueue_reactor * reactor = slot->reactor;
+	struct kqueue_reactor * reactor = looper->reactor;
 	if (skp_likely(reactor)) {
 		close(reactor->kqfd);
 		free(reactor);
 	}
 }
 
-static int reactor_modify_event(struct uev_slot *slot,
+static int modify_event(struct uev_looper *looper,
 		struct uev_stream *ue/*old mask*/, struct poll_event *pe/*new mask*/)
 {
 	int rc, nr = 0;
 	uint16_t delmask, addmask;
 	struct kevent64_s ke[4];
-	struct kqueue_reactor *reactor = slot->reactor;
+	struct kqueue_reactor *reactor = looper->reactor;
 
 	/*
 	 *1. close same mask
@@ -143,14 +143,12 @@ static int reactor_modify_event(struct uev_slot *slot,
 	return rc;
 }
 
-static int reactor_poll(struct uev_slot *slot, int timeout)
+static int reactor_poll(struct uev_looper *looper, int timeout)
 {
 	int nr;
-	struct kevent64_s *ke;
-	struct poll_event *pe;
 	struct uev_siginfo *siginfo;
 	struct timespec ts, *pts = NULL;
-	struct kqueue_reactor *reactor = slot->reactor;
+	struct kqueue_reactor *reactor = looper->reactor;
 
 	if (timeout > -1) {
 		ts.tv_sec = timeout / 1000;
@@ -158,12 +156,12 @@ static int reactor_poll(struct uev_slot *slot, int timeout)
 		pts = &ts;
 	}
 
-	siginfo = slot->siginfo;
+	siginfo = looper->siginfo;
 	if (siginfo)
 		bitmap_zero(siginfo->active, NSIG);
 
 	nr = kevent64(reactor->kqfd, NULL, 0,
-			&reactor->ready_events[0], reactor->ready_size, 0, pts);
+			&reactor->ready_events[0], reactor->poll_size, 0, pts);
 
 	if (skp_unlikely(nr < 0)) {
 		if (skp_likely(errno == EINTR))
@@ -172,35 +170,43 @@ static int reactor_poll(struct uev_slot *slot, int timeout)
 		return -errno;
 	}
 
-	EVENT_BUG_ON(nr > slot->ready_size);
-
-	for (int i = 0; i < nr; i++) {
-		pe = &slot->ready_events[i];
-		ke = &reactor->ready_events[i];
-		kqev2mask(ke, pe);
-		if (skp_unlikely(pe->mask & EVENT_R0)) {
-			/*收集触发的信号*/
-			EVENT_BUG_ON(!siginfo);
-			EVENT_BUG_ON(ke->ident >= NSIG);
-			EVENT_BUG_ON(pe->mask & ~ EVENT_R0);
-			EVENT_BUG_ON(poll_get_id(pe) != EV_SIGID);
-			EVENT_BUG_ON(poll_get_fd(pe) != ke->ident);
-			__set_bit(ke->ident, siginfo->active);
-		}
-	}
-
+	EVENT_BUG_ON(nr > looper->poll_size);
 	return nr;
 }
 
+static int pollevent_pull(struct uev_looper *looper, int idx,
+		struct poll_event *pe)
+{
+	struct kevent64_s *ke;
+	struct uev_siginfo *siginfo = looper->siginfo;
+	struct kqueue_reactor *reactor = looper->reactor;
+	
+	ke = &reactor->ready_events[idx];
+	EVENT_BUG_ON(idx >= reactor->poll_size);
+
+	kqev2mask(ke, pe);
+	if (skp_unlikely(pe->mask & EVENT_R0)) {
+		/*收集触发的信号*/
+		EVENT_BUG_ON(!siginfo);
+		EVENT_BUG_ON(ke->ident >= NSIG);
+		EVENT_BUG_ON(pe->mask & ~ EVENT_R0);
+		EVENT_BUG_ON(pollevent_id(pe) != EV_SIGID);
+		EVENT_BUG_ON(pollevent_fd(pe) != ke->ident);
+		__set_bit(ke->ident, siginfo->active);
+		return -EAGAIN;
+	}
+	return 0;
+}
+
 #define __define_kqueue_ctl(name, op)										\
-static inline int __reactor_##name##_signal(struct uev_slot *slot, 			\
+static inline int __##name##_signal(struct uev_looper *looper, 				\
 		int signo)															\
 {																			\
 	int rc;																	\
 	struct kevent64_s ke;													\
-	uint64_t data = poll_mk_data(EV_SIGID, signo);							\
-	struct kqueue_reactor *reactor = slot->reactor;							\
-	EVENT_BUG_ON(!slot->siginfo);											\
+	uint64_t data = pollevent_make_data(EV_SIGID, signo);					\
+	struct kqueue_reactor *reactor = looper->reactor;						\
+	EVENT_BUG_ON(!looper->siginfo);											\
 	EV_SET64(&ke, signo, EVFILT_SIGNAL, EV_##op, 0, 0, data, 0, 0);			\
 	rc = kevent64(reactor->kqfd, &ke, 1, NULL, 0, 0, NULL);					\
 	if (skp_unlikely(rc < 0)) {												\
@@ -215,20 +221,20 @@ __define_kqueue_ctl(unregister, DELETE)
 
 #undef __define_kqueue_ctl
 
-static int reactor_register_signal(struct uev_slot *slot, int signo)
+static int register_signal(struct uev_looper *looper, int signo)
 {
-	struct kqueue_reactor *reactor = slot->reactor;
-	int rc = __reactor_register_signal(slot, signo);
+	struct kqueue_reactor *reactor = looper->reactor;
+	int rc = __register_signal(looper, signo);
 	/*交由 poller 处理信号，保存原来的信号处理句柄*/
 	if (skp_likely(!rc))
 		reactor->signal_defhdl[signo] = signal_setup(signo, SIG_IGN);
 	return rc;
 }
 
-static int reactor_unregister_signal(struct uev_slot *slot, int signo)
+static int unregister_signal(struct uev_looper *looper, int signo)
 {
-	struct kqueue_reactor *reactor = slot->reactor;
-	int rc = __reactor_unregister_signal(slot, signo);
+	struct kqueue_reactor *reactor = looper->reactor;
+	int rc = __unregister_signal(looper, signo);
 	/*恢复原来的信号处理句柄*/
 	if (skp_likely(!rc))
 		signal_setup(signo, reactor->signal_defhdl[signo]);

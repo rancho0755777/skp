@@ -250,6 +250,48 @@ struct __padding {
 		"Need native word sized stores/loads for atomicity.")
 
 ////////////////////////////////////////////////////////////////////////////////
+#define _RET_IP_	((unsigned long)__builtin_return_address(0))
+#define _THIS_IP_ 	({ __label__ __here; __here: (unsigned long)&&__here; })
+////////////////////////////////////////////////////////////////////////////////
+#ifndef offsetof
+# ifdef __compiler_offsetof
+#  define offsetof(TYPE, MEMBER)	__compiler_offsetof(TYPE, MEMBER)
+# else
+#  define offsetof(TYPE, MEMBER)	((size_t)&((TYPE *)0)->MEMBER)
+# endif
+#endif
+
+/** 字段到结构体末尾的字节大小 */
+#define sizeof_toend(TYPE, MEMBER)											\
+	(sizeof(TYPE) - offsetof(TYPE, MEMBER))
+
+/** 结构体内的字段的字节大小 */
+#define sizeof_field(TYPE, MEMBER) sizeof((((TYPE *)0)->MEMBER))
+
+/** 结构体头到字段末尾的字节大小 */
+#define offsetof_end(TYPE, MEMBER)											\
+	(offsetof(TYPE, MEMBER)	+ sizeof_field(TYPE, MEMBER))
+
+/** 从结构体内的字段指针转换为结构体指针*/
+#ifndef container_of
+# ifndef __cplusplus
+# 	define container_of(ptr, type, member)									\
+	({																		\
+		uintptr_t __mptr = (uintptr_t)(ptr);								\
+		BUILD_BUG_ON_MSG(!__same_type(*(ptr), ((type*)0)->member) &&		\
+			!__same_type(*(ptr), void),										\
+			"pointer type mismatch in container_of()");						\
+		((type*)(__mptr - offsetof(type, member)));							\
+	})
+# else
+# 	define container_of(ptr, type, member)									\
+	({																		\
+		uintptr_t __mptr = (uintptr_t)(ptr);								\
+		((type*)(__mptr - offsetof(type, member)));							\
+	})
+# endif
+#endif
+////////////////////////////////////////////////////////////////////////////////
 #ifdef CONFIG_CPU_BIG_ENDIAN
 # define __BIG_ENDIAN 4321
 #else

@@ -7,14 +7,14 @@
 # error only <process/event.c> can be included directly
 #endif
 
-struct uev_slot;
+struct uev_looper;
 struct uev_stream;
 struct poll_event;
 
 struct epoll_reactor {
 	int epfd;
 	int sigfd; /**< 信号监视器*/
-	uint32_t ready_size;
+	uint32_t poll_size;
 	sigset_t sigmask; /**< 正在监控的信号*/
 	sigset_t sigblock; /**< 注册时原来的阻塞状况*/
 	struct epoll_event ready_events[0];
@@ -33,8 +33,8 @@ static inline void epev2mask(const struct epoll_event *ee, struct poll_event *pe
 {
 	pe->mask = 0;
 	pe->data = ee->data.u64;
-	if (ee->events & (EPOLLIN | EPOLLPRI)) pe->mask |= EVENT_READ;
 	if (ee->events & EPOLLOUT) pe->mask |= EVENT_WRITE;
+	if (ee->events & (EPOLLIN | EPOLLPRI)) pe->mask |= EVENT_READ;
 	if (ee->events & (EPOLLERR|EPOLLHUP)) pe->mask |= EVENT_ERROR;
 	/*描述符被关闭*/
 	if (skp_unlikely(ee->events & ~(EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR)))
@@ -42,15 +42,15 @@ static inline void epev2mask(const struct epoll_event *ee, struct poll_event *pe
 }
 
 #define __define_epoll_ctl(name, op)										\
-static int reactor_##name##_event(struct uev_slot *slot,					\
+static int name##_event(struct uev_looper *looper,							\
 		struct uev_stream *ue, struct poll_event *pe)						\
 { 																			\
 	int rc; 																\
 	struct epoll_event ee;													\
-	struct epoll_reactor * reactor = slot->reactor;							\
+	struct epoll_reactor * reactor = looper->reactor;						\
 	mask2epev(pe, &ee);														\
 	rc = epoll_ctl(reactor->epfd, EPOLL_CTL_##op, ue->fd, &ee);				\
-	if (skp_unlikely(rc < 0)) { 												\
+	if (skp_unlikely(rc < 0)) { 											\
 		log_warn("epoll_ctl/%s failed : %s", #op, strerror_local());		\
 		return -errno; 														\
 	}																		\
@@ -62,14 +62,14 @@ __define_epoll_ctl(modify, MOD)
 __define_epoll_ctl(unregister, DEL)
 
 /*错误返回非零0*/
-static int reactor_create(struct uev_slot *slot)
+static int reactor_create(struct uev_looper *looper)
 {
 	int rc, epfd, sigfd;
 	struct epoll_event ee;
 	struct epoll_reactor *reactor;
 
 	reactor = malloc(sizeof(*reactor) + sizeof(reactor->ready_events[0]) *
-					slot->ready_size);
+					looper->poll_size);
 	if (skp_unlikely(!reactor))
 		return -ENOMEM;
 
@@ -77,15 +77,15 @@ static int reactor_create(struct uev_slot *slot)
 	reactor->sigfd = -1;
 	sigemptyset(&reactor->sigmask);
 	sigemptyset(&reactor->sigblock);
-	reactor->ready_size = slot->ready_size;
+	reactor->poll_size = looper->poll_size;
 
 	epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (skp_unlikely(epfd < 0))
 		goto fail_epfd;
 
 	reactor->epfd = epfd;
-	slot->reactor = reactor;
-	if (!slot->siginfo)
+	looper->reactor = reactor;
+	if (!looper->siginfo)
 		return 0;
 
 	/*启动时将监控的信号集设置为空*/	
@@ -94,7 +94,7 @@ static int reactor_create(struct uev_slot *slot)
 		goto fail_sigfd;
 
 	ee.events = EPOLLIN;
-	ee.data.u64 = poll_mk_data(EV_SIGID, sigfd);
+	ee.data.u64 = pollevent_make_data(EV_SIGID, sigfd);
 	rc = epoll_ctl(epfd, EPOLL_CTL_ADD, sigfd, &ee);
 	if (skp_unlikely(rc < 0))
 		goto fail_reg;
@@ -108,19 +108,19 @@ fail_sigfd:
 	close(epfd);
 fail_epfd:
 	free(reactor);
-	slot->reactor = NULL;
+	looper->reactor = NULL;
 	return -EINVAL;
 }
 
 /*错误返回非零0*/
-static int reactor_disable_event(struct uev_slot *slot,
+static int disable_event(struct uev_looper *looper,
 		struct uev_stream *event, struct poll_event *pevent)
 {
 	/*epoll 支持边沿触发，不需要调整*/
 	return 0;
 }
 
-static int reactor_enable_event(struct uev_slot *slot,
+static int enable_event(struct uev_looper *looper,
 		struct uev_stream *event, struct poll_event *pevent)
 {
 	/*epoll 支持边沿触发，不需要调整*/
@@ -128,11 +128,11 @@ static int reactor_enable_event(struct uev_slot *slot,
 }
 
 /*销毁不同实现的私有数据*/
-static void reactor_destroy(struct uev_slot *slot)
+static void reactor_destroy(struct uev_looper *looper)
 {
-	struct epoll_reactor * reactor = slot->reactor;
+	struct epoll_reactor * reactor = looper->reactor;
 	if (skp_likely(reactor)) {
-		if (slot->siginfo)
+		if (looper->siginfo)
 			close(reactor->sigfd);
 		close(reactor->epfd);
 		free(reactor);
@@ -143,22 +143,20 @@ static void reactor_destroy(struct uev_slot *slot)
 #define READ_NR_SIGINFO 4
 
 /*返回就绪个数*/
-static int reactor_poll(struct uev_slot *slot, int timeout)
+static int reactor_poll(struct uev_looper *looper, int timeout)
 {
 	int nr;
 	ssize_t n;
 	struct poll_event *pe;
-	struct epoll_event *ee;
 	struct uev_siginfo *siginfo;
-	struct signalfd_siginfo fdsi[READ_NR_SIGINFO];
-	struct epoll_reactor *reactor = slot->reactor;
+	struct epoll_reactor *reactor = looper->reactor;
 
-	siginfo = slot->siginfo;
+	siginfo = looper->siginfo;
 	if (siginfo)
 		bitmap_zero(siginfo->active, NSIG);
 
 	nr = epoll_wait(reactor->epfd, &reactor->ready_events[0],
-			reactor->ready_size, timeout);
+			reactor->poll_size, timeout);
 
 	if (skp_unlikely(nr < 0)) {
 		if (skp_likely(errno == EINTR))
@@ -167,43 +165,55 @@ static int reactor_poll(struct uev_slot *slot, int timeout)
 		return -errno;
 	}
 
-	EVENT_BUG_ON(nr > slot->ready_size);
-
-	for (int i = 0; i < nr; i++) {
-		pe = &slot->ready_events[i];
-		ee = &reactor->ready_events[i];
-		epev2mask(ee, pe);
-		if (skp_unlikely(poll_get_fd(pe) == reactor->sigfd)) {
-			/*收集触发的信号*/
-			EVENT_BUG_ON(!siginfo);
-			EVENT_BUG_ON(poll_get_id(pe) != EV_SIGID);
-			n = read(reactor->sigfd, fdsi, sizeof(fdsi));
-			EVENT_BUG_ON(n > sizeof(fdsi));
-			if (skp_unlikely((n < 0 || (n % sizeof(fdsi[0]))) && errno != EAGAIN)) {
-				log_error("read sigfd failed : %s", strerror_local());
-				return n < 0 ? -errno : -ENODEV;
-			}
-			n /= sizeof(fdsi[0]);	
-			for (ssize_t i = 0; i < n; i++) {
-				__set_bit(fdsi[i].ssi_signo, siginfo->active);
-			}
-		}
-	}
+	EVENT_BUG_ON(nr > looper->poll_size);
 
 	return nr;
 }
 
-static bool epoll_signal_saved(struct epoll_reactor *rct, int signo)
+static int pollevent_pull(struct uev_looper *looper, int idx,
+		struct pool_event *pe)
 {
-	return !!sigismember(&rct->sigmask, signo);
+	struct epoll_event *ee;
+	struct uev_siginfo *siginfo = looper->siginfo;
+	struct epoll_reactor *reactor = looper->reactor;
+
+
+	ee = &reactor->ready_events[idx];
+	EVENT_BUG_ON(idx >= looper->poll_size);
+
+	epev2mask(ee, pe);
+	if (skp_unlikely(pollevent_fd(pe) == reactor->sigfd)) {
+		ssize_t n;
+		struct signalfd_siginfo fdsi[READ_NR_SIGINFO];
+		/*收集触发的信号*/
+		EVENT_BUG_ON(!siginfo);
+		EVENT_BUG_ON(pollevent_id(pe) != EV_SIGID);
+		n = read(reactor->sigfd, fdsi, sizeof(fdsi));
+		EVENT_BUG_ON(n > sizeof(fdsi));
+		if (skp_unlikely((n < 0 || (n % sizeof(fdsi[0]))) && errno != EAGAIN)) {
+			log_error("read sigfd failed : %s", strerror_local());
+			return n < 0 ? -errno : -ENODEV;
+		}
+		n /= sizeof(fdsi[0]);	
+		for (ssize_t i = 0; i < n; i++) {
+			__set_bit(fdsi[i].ssi_signo, siginfo->active);
+		}
+		return -EAGAIN;
+	}
+	return 0;
 }
 
-static bool epoll_signal_save(struct epoll_reactor *rct, int signo)
+static bool epoll_signal_saved(struct epoll_reactor *reactor, int signo)
+{
+	return !!sigismember(&reactor->sigmask, signo);
+}
+
+static bool epoll_signal_save(struct epoll_reactor *reactor, int signo)
 {
 	sigset_t mask, old;
 
 	/*已经被监控*/
-	if (epoll_signal_saved(rct, signo))
+	if (epoll_signal_saved(reactor, signo))
 		return false;
 
 	/*必须全进程阻塞信号*/
@@ -212,34 +222,34 @@ static bool epoll_signal_save(struct epoll_reactor *rct, int signo)
 	sigprocmask(SIG_BLOCK, &mask, &old);
 	/*原来就被阻塞了，记录这个事实以便恢复*/
 	if (sigismember(&old, signo))
-		sigaddset(&rct->sigblock, signo);
-	sigaddset(&rct->sigmask, signo);
+		sigaddset(&reactor->sigblock, signo);
+	sigaddset(&reactor->sigmask, signo);
 	return true;
 }
 
-static bool epoll_signal_recover(struct epoll_reactor *rct, int signo)
+static bool epoll_signal_recover(struct epoll_reactor *reactor, int signo)
 {
 	sigset_t mask;
 
 	/*已经被监控*/
-	if (!epoll_signal_saved(rct, signo))
+	if (!epoll_signal_saved(reactor, signo))
 		return false;
 
 	sigemptyset(&mask);
 	sigaddset(&mask, signo);
 	/*不在阻塞集合中，则表示是事件API阻塞的，需要恢复*/
-	if (!sigismember(&rct->sigblock, signo))
+	if (!sigismember(&reactor->sigblock, signo))
 		sigprocmask(SIG_UNBLOCK, &mask, 0);
-	sigdelset(&rct->sigmask, signo);
-	sigdelset(&rct->sigblock, signo);
+	sigdelset(&reactor->sigmask, signo);
+	sigdelset(&reactor->sigblock, signo);
 	return true;
 }
 
-static int reactor_register_signal(struct uev_slot *slot, int signo)
+static int register_signal(struct uev_looper *looper, int signo)
 {
 	int rc;
-	struct epoll_reactor * reactor = slot->reactor;
-	EVENT_BUG_ON(!slot->siginfo);
+	struct epoll_reactor * reactor = looper->reactor;
+	EVENT_BUG_ON(!looper->siginfo);
 
 	if (!epoll_signal_save(reactor, signo))
 		return 0;
@@ -255,12 +265,12 @@ static int reactor_register_signal(struct uev_slot *slot, int signo)
 	return 0;
 }
 
-static int reactor_unregister_signal(struct uev_slot *slot, int signo)
+static int unregister_signal(struct uev_looper *looper, int signo)
 {
 	int rc;
-	struct epoll_reactor * reactor = slot->reactor;
+	struct epoll_reactor * reactor = looper->reactor;
 
-	EVENT_BUG_ON(!slot->siginfo);
+	EVENT_BUG_ON(!looper->siginfo);
 
 	if (!epoll_signal_recover(reactor, signo))
 		return -EINVAL;
