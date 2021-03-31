@@ -45,8 +45,7 @@ enum {
 
 	/*event status*/
 	EVENT_PENDING_BIT = ilog2(EVENT_TYPE_MASK + 1),
-	EVENT_ATTACHED_BIT,
-	EVENT_TIMEDOUT_BIT = EVENT_ATTACHED_BIT,
+	EVENT_TIMEDOUT_BIT,
 	EVENT_WRITE_ONCE_BIT, /**< 执行回调前 disable*/
 	EVENT_FLAGS_SHIFT,
 	EVENT_FLAGS_MASK = ((1U << EVENT_FLAGS_SHIFT) - 1),
@@ -283,6 +282,8 @@ extern void uev_looper_destroy(struct uev_looper*);
 /**
  * 绑定线程
  * 不能给私有的looper绑定线程?
+ * 绑定线程后，且不为私有模式，则可以被共享使用?
+ *
  * @param thd 为空，则解绑
  */
 extern void uev_looper_bind(struct uev_looper*, uthread_t thd);

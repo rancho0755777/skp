@@ -98,7 +98,6 @@ static bool test_set_##op(struct uev_core *core)				\
 { return __test_and_set_bit(EVENT_##op##_BIT, &core->flags); }
 
 __def_core_flag_op(PENDING)
-__def_core_flag_op(ATTACHED)
 __def_core_flag_op(TIMEDOUT)
 
 #undef __def_core_flag_op
@@ -140,35 +139,66 @@ static int pollevent_pull(struct uev_looper*, int, struct poll_event*);
 #endif
 
 static __always_inline
-int stream_insert(struct uev_looper *looper, struct uev_stream *ev)
+int stream_insert(struct uev_looper *looper, struct uev_stream *ev,
+		uint16_t mask)
 {
+	int rc;
 	long id;
-	if (test_set_PENDING(&ev->core))
+	struct poll_event pe;
+
+	if (test_PENDING(&ev->core))
 		return 0;
+
+	EVENT_BUG_ON(test_set_PENDING(&ev->core));
+
 	/*new insert*/
 	id = idr_alloc(&looper->evidr, ev);
 	if (WARN_ON(id < 0)) {
-		clear_PENDING(&ev->core);
-		return -ENOMEM;
+		rc = -ENOMEM;
+		goto oom;
 	}
+
+	/*register event*/
+	pollevent_init(&pe, id, ev->fd, mask);
+	rc = register_event(looper, ev, &pe);
+	if (skp_unlikely(rc)) {
+		goto fail;
+	}
+
 	EVENT_BUG_ON(id > U16_MAX);
-	ev->id = (uint16_t)id;
+
 	looper->nr_events++;
+	ev->id = (uint16_t)id;
+	WRITE_ONCE(ev->mask, mask);
+
 	log_debug("insert event : fd [%d], id [%d]", ev->fd, ev->id);
-	return 0;
+	return 1;
+
+fail:
+	idr_remove(&looper->evidr, id);
+oom:
+	clear_PENDING(&ev->core);
+	return rc;
 }
 
-static __always_inline
-int stream_remove(struct uev_looper *looper, struct uev_stream *ev)
+static int stream_remove(struct uev_looper *looper, struct uev_stream *ev)
 {
+	struct poll_event pe;
 	struct uev_stream *tmp;
+
 	if (!test_clear_PENDING(&ev->core))
 		return 0;
+
+	pollevent_init(&pe, ev->id, ev->fd, ev->mask);
+	EVENT_WARN_ON(unregister_event(looper, ev, &pe));
+
 	tmp = idr_remove(&looper->evidr, ev->id);
 	EVENT_BUG_ON(tmp != ev);
-	log_debug("remove event : fd [%d], id [%d]", ev->fd, ev->id);
+
 	ev->id = U16_MAX;
 	looper->nr_events--;
+
+	log_debug("remove event : fd [%d], id [%d]", ev->fd, ev->id);
 	return 1;
 }
 
@@ -177,7 +207,7 @@ struct uev_stream* stream_lookup(struct uev_looper *looper, int fd, uint32_t id)
 {
 	struct uev_stream *ev = idr_find(&looper->evidr, id);
 	if (skp_unlikely(!ev || ev->fd != fd)) {
-		log_warn_on(id != U32_MAX,
+		log_warn_on(id != EV_SIGID,
 			"can't find event : fd [%d/%d], id [%d]", fd, (ev?ev->fd:-1), id);
 		return NULL;
 	}
@@ -242,15 +272,86 @@ static inline void notify_poller_locked(struct uev_looper *looper, bool updated)
 		notify_poller(looper);
 }
 
-void uev_async_init(struct uev_async *async, uev_async_fn func)
+static struct uev_looper *
+get_looper_and_lock(struct uev_core *core)
 {
-	memset(async, 0, sizeof(*async));
-	async->func = func;
-	atomic_set(&async->nr_cnt, -1);
-	async->pipe_fd[0] = async->pipe_fd[1] = -1;
-	uev_stream_init(&async->stream, -1, async_stream_cb);
-	/*修正类型*/
-	async->stream.core.flags = EVENT_ASYNC|EVENT_WRITE_ONCE;
+	struct uev_looper *looper;
+	do {
+		looper = uev_core_looper(core);
+		if (skp_unlikely(!looper)) {
+			/*TODO:查找可用的并设置*/
+			return NULL;
+		}
+		looper_lock(looper);
+		if (skp_likely(uev_core_looper(core) == looper))
+			break;
+		looper_unlock(looper);	
+	} while (1);
+	return looper;
+}
+
+static
+int uev_wait_finish_sync(struct uev_core *core, struct uev_looper *looper)
+{
+	DEFINE_WAITQUEUE(wait);
+	struct uev_looper *tmp;
+
+	if (!looper_need_lock(looper))
+		return 0;
+
+	if (looper->current != core)
+		return 0;
+
+	/*TODO:事件线程当前的运行事件*/
+
+	add_wait_queue_locked(&looper->wait_queue, &wait);
+
+	do {
+		if (looper->current != core)
+			break;
+		looper_unlock(looper);
+		log_debug("wait event finish : %p/%p", core, uev_core_looper(core));
+		/*以超时等待，因为 事件模块 可能已经被停止*/
+		wait_on_timeout(&wait, 2000);
+		looper_lock(looper);
+	} while (test_bit(EVLOOP_RUNNING, &looper->flags));
+
+	remove_wait_queue_locked(&looper->wait_queue, &wait);
+
+	/*解锁了，有可能修改了 CPU 索引*/
+	tmp = uev_core_looper(core);
+	if (skp_unlikely(tmp != looper))
+		return -EAGAIN;
+
+	/* 回调又加入了事件系统
+	 * 如果这时候 事件模块 处于正在停止状态，说明使用错误
+	 */
+	if (uev_core_pending(core))
+		return -EBUSY;
+
+	return 0;
+}
+
+/*查看事件池中所有的线程当前运行的事件*/
+static void uev_slow_wait_finish(struct uev_core *core)
+{
+	int cpu, rc;
+	struct uev_looper *looper;
+
+	big_lock();
+	list_for_each_entry(looper, &looper_list, node) {
+		if (looper->current != core)
+			continue;
+
+		/*TODO:事件线程当前的运行事件*/
+
+		looper_lock(looper);
+		rc = uev_wait_finish_sync(core, looper);
+		looper_unlock(looper);
+
+		WARN_ON(rc == -EBUSY);
+	}
+	big_unlock();
 }
 
 void uev_stream_init(struct uev_stream *stream, int32_t fd, uev_stream_fn func)
@@ -262,6 +363,136 @@ void uev_stream_init(struct uev_stream *stream, int32_t fd, uev_stream_fn func)
 	stream->core.flags = EVENT_STREAM|EVENT_WRITE_ONCE;
 }
 
+int __uev_stream_modify(struct uev_stream *stream, uint16_t mask)
+{
+	int rc = 0;
+	struct poll_event pe;
+	struct uev_looper *looper;
+
+	/*不允许使用不是输入的事件*/
+	if (WARN_ON(mask & ~(EVENT_ACTION_MASK|EVENT_EDGE)))
+		return -EINVAL;
+
+	/*在锁外预分配*/
+	radix_tree_preload();
+	/*获取槽位，有可能因系统异步关闭而失败*/
+	looper = get_looper_and_lock(&stream->core);
+	if (skp_unlikely(!looper))
+		return -ENODEV;
+
+	/*插入到管理集合，分配了一个ID，并注册，如果已注册则继续下面的流程，修改*/
+	rc = stream_insert(looper, stream, mask);
+	if (skp_unlikely(rc))
+		goto out;
+
+	/*modify*/
+	/*构造一个通用事件标识，用于与不同平台的内核通信*/
+	pollevent_init(&pe, stream->id, stream->fd, mask);
+	if (skp_likely(mask || stream->mask) && mask != stream->mask) {
+		rc = modify_event(looper, stream, &pe);
+		if (skp_unlikely(rc))
+			goto fail;
+	}
+
+	pe.mask &= stream->mask;
+	if ((stream->mask & EVENT_EDGE) &&
+			skp_likely((pe.mask) & EVENT_ACTION_MASK)) {
+		/*如果是边沿触发，调整侦听的新旧共有事件*/
+		rc = enable_event(looper, stream, &pe);
+		if (skp_unlikely(rc))
+			goto fail;
+	}
+
+	WRITE_ONCE(stream->mask, mask);
+	looper_unlock(looper);
+	return 0;
+
+fail:
+	stream_remove(looper, stream);
+out:
+	looper_unlock(looper);
+	return rc>0?0:rc;
+}
+
+int __uev_stream_delete(struct uev_stream *stream, bool sync,
+		struct uev_looper *nlooper)
+{
+	int rc, rc2, index;
+	struct uev_looper *looper;
+
+try:
+	/*如果索引为无效值，那么可能处于不确定的状态，检查所有的事件线程*/
+	looper = uev_stream_looper(stream);
+	if (skp_unlikely(!looper))
+		goto slow;
+
+	looper = get_looper_and_lock(&stream->core);
+	if (skp_unlikely(!looper))
+		goto slow;
+
+pending:
+	rc = stream_remove(looper, stream);
+	if (sync) {
+		/*同步等待*/
+		rc2 = uev_wait_finish_sync(&stream->core, looper);
+		if (skp_unlikely(rc2)) {
+			if (rc2 == -EAGAIN) {
+				looper_unlock(looper);
+				goto try;
+			}
+			if (!test_bit(EVLOOP_RUNNING, &looper->flags))
+				goto out;
+			goto pending;
+		}
+		uev_stream_setlooper(stream, nlooper);
+	}
+
+out:
+	looper_unlock(looper);
+	return rc;
+
+slow:
+	/*将事件池全部检查一遍*/
+	if (sync)
+		uev_slow_wait_finish(&stream->core);
+	return 0;
+}
+
+int uev_stream_enable(struct uev_stream *stream, uint16_t mask)
+{
+	uint16_t old;
+	if (!uev_stream_pending(stream))
+		return -EINVAL;
+	mask &= (EVENT_ACTION_MASK | EVENT_EDGE);
+	old = READ_ONCE(stream->mask);
+	mask |= old;
+	if ((mask == old
+#ifdef __apple__
+		 /*apple 需要手动的启动边沿触发*/
+		 && !(mask & EVENT_EDGE)
+#endif
+		 ))
+		return 0;
+	return __uev_stream_modify(stream, mask);
+}
+
+int uev_stream_disable(struct uev_stream *stream, uint16_t mask)
+{
+	uint16_t old;
+	if (!uev_stream_pending(stream))
+		return -EINVAL;
+	mask &= (EVENT_ACTION_MASK | EVENT_EDGE);
+	old = READ_ONCE(stream->mask);
+	mask = old & (~mask);
+	if ((mask == old
+#ifdef __apple__
+		 /*apple 需要手动的启动边沿触发*/
+		 && !(mask & EVENT_EDGE)
+#endif
+		 ))
+		return 0;
+	return __uev_stream_modify(stream, mask);
+}
 void async_stream_cb(struct uev_stream *stream, uint16_t mask)
 {
 	int nr;
@@ -290,6 +521,17 @@ void async_stream_cb(struct uev_stream *stream, uint16_t mask)
 	if (&uev_async_looper(async)->notifier == async)
 		log_debug("eat notifier : %d", nr + 1);
 #endif
+}
+
+void uev_async_init(struct uev_async *async, uev_async_fn func)
+{
+	memset(async, 0, sizeof(*async));
+	async->func = func;
+	atomic_set(&async->nr_cnt, -1);
+	async->pipe_fd[0] = async->pipe_fd[1] = -1;
+	uev_stream_init(&async->stream, -1, async_stream_cb);
+	/*修正类型*/
+	async->stream.core.flags = EVENT_ASYNC|EVENT_WRITE_ONCE;
 }
 
 /*触发通知*/
@@ -407,14 +649,13 @@ void uev_looper_finit(struct uev_looper* looper)
 }
 
 static inline
-void looper_invoke_start(struct uev_looper *looper, struct uev_core *core)
+void invoke_start(struct uev_looper *looper, struct uev_core *core)
 {
 	WRITE_ONCE(looper->current, core);
 	looper_unlock(looper);
 }
-
 static __always_inline
-void looper_invoke_finish(struct uev_looper *looper)
+void invoke_finish(struct uev_looper *looper)
 {
 	looper_lock(looper);
 	EVENT_BUG_ON(!looper->current);
@@ -423,7 +664,7 @@ void looper_invoke_finish(struct uev_looper *looper)
 	if (skp_likely(!waitqueue_active(&looper->wait_queue)))
 		return;
 
-	/*可能多个路径项删除定时器，并处于等待状态*/
+	/*可能多个路径项删除事件，并处于等待状态*/
 	wake_up_all_locked(&looper->wait_queue);
 	looper_unlock(looper);
 	sched_yield();
@@ -487,7 +728,7 @@ static void process_streams(struct uev_looper *looper, int nr_ready)
 
 		omask = ev->mask;
 		flags = ev->core.flags;
-		if (skp_likely(flags & EVENT_ATTACHED)) {
+		if (skp_likely(flags & EVENT_PENDING)) {
 #ifdef __apple__
 			/*如果是边沿触发，从内核中删除本次已触发的侦听事件*/
 			if (skp_unlikely(omask & EVENT_EDGE))
@@ -509,10 +750,10 @@ static void process_streams(struct uev_looper *looper, int nr_ready)
 		}
 
 		func = ev->func;
-		looper_invoke_start(looper, &ev->core);
+		invoke_start(looper, &ev->core);
 		if (skp_likely(func))
 			func(ev, pe.mask);
-		looper_invoke_finish(looper);
+		invoke_finish(looper);
 	}
 
 	looper->nr_triggers += nr_invokes;

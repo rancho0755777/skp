@@ -64,11 +64,10 @@ static inline bool sstr_equal(const struct sstr *ss1, const struct sstr *ss2)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/*精度为4的浮点数，乘以10000后用整数表示*/
 
 /**负数返回1，正数返回0，否则返回负数*/
 extern int str2int(const char *ptr, ssize_t l, int64_t *value);
-/**负数返回1，正数返回0，否则返回负数 */
+/**负数返回1，正数返回0，否则返回负数, multi 为精度 */
 extern int str2float(const char *ptr, ssize_t l, int64_t *value, int multi);
 
 #ifndef __linux__
